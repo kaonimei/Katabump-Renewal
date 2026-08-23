@@ -1,0 +1,37 @@
+name: Katabump Auto Renew
+
+on:
+  schedule:
+    - cron: '0 12 */2 * *'
+  workflow_dispatch:
+
+jobs:
+  renew_job:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # 👇👇👇 这一步绝对不能少！没有它 DrissionPage 启动不了 👇👇👇
+      - name: Install Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install Dependencies
+        run: pip install DrissionPage requests
+
+      - name: Run Renew Script
+        env:
+          KB_EMAIL: ${{ secrets.KB_EMAIL }}
+          KB_PASSWORD: ${{ secrets.KB_PASSWORD }}
+          KB_RENEW_URL: ${{ secrets.KB_RENEW_URL }}
+        run: |
+          # 启动 Python (带 -u 参数实时输出)
+          python -u main.py
