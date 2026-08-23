@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import requests
 import zipfile
@@ -12,6 +13,29 @@ def log(message):
     current_time = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{current_time}] {message}", flush=True)
 
+def ensure_extensions_dir():
+    if not os.path.exists("extensions"):
+        os.makedirs("extensions", exist_ok=True)
+
+def download_and_extract_zip(url, extract_dir, plugin_name):
+    try:
+        ensure_extensions_dir()
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, stream=True, timeout=30)
+        if resp.status_code != 200:
+            log(f"❌ [{plugin_name}] 下载失败: HTTP {resp.status_code}")
+            return False
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+            zf.extractall(extract_dir)
+        return True
+    except requests.RequestException as e:
+        log(f"❌ [{plugin_name}] 网络异常: {e}")
+    except zipfile.BadZipFile:
+        log(f"❌ [{plugin_name}] 下载内容不是有效压缩包")
+    except Exception as e:
+        log(f"❌ [{plugin_name}] 处理异常: {e}")
+    return False
+
 def download_silk():
     """
     【插件1】Silk Privacy Pass
@@ -21,16 +45,9 @@ def download_silk():
     if os.path.exists(extract_dir): return os.path.abspath(extract_dir)
     
     log(">>> [插件1] 正在下载 Silk Privacy Pass...")
-    try:
-        url = "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=122.0&acceptformat=crx2,crx3&x=id%3Dajhmfdgkijocedmfjonnpjfojldioehi%26uc"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, stream=True)
-        if resp.status_code == 200:
-            if not os.path.exists("extensions"): os.makedirs("extensions")
-            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-                zf.extractall(extract_dir)
-            return os.path.abspath(extract_dir)
-    except: pass
+    url = "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=122.0&acceptformat=crx2,crx3&x=id%3Dajhmfdgkijocedmfjonnpjfojldioehi%26uc"
+    if download_and_extract_zip(url, extract_dir, "插件1"):
+        return os.path.abspath(extract_dir)
     return None
 
 def download_cf_autoclick():
@@ -43,19 +60,8 @@ def download_cf_autoclick():
     # 下载逻辑
     if not os.path.exists(extract_root):
         log(">>> [插件2] 正在下载 CF-AutoClick (Master)...")
-        try:
-            url = "https://codeload.github.com/tenacious6/cf-autoclick/zip/refs/heads/master"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            resp = requests.get(url, headers=headers, stream=True)
-            if resp.status_code == 200:
-                if not os.path.exists("extensions"): os.makedirs("extensions")
-                with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-                    zf.extractall(extract_root)
-            else:
-                log(f"❌ [插件2] 下载失败: {resp.status_code}")
-                return None
-        except Exception as e:
-            log(f"❌ [插件2] 异常: {e}")
+        url = "https://codeload.github.com/tenacious6/cf-autoclick/zip/refs/heads/master"
+        if not download_and_extract_zip(url, extract_root, "插件2"):
             return None
 
     # 智能寻址：寻找 manifest.json
@@ -93,7 +99,11 @@ def manual_click_checkbox(modal):
         else:
             # 没 checkbox 就点 iframe 中心
             log(">>> [补刀] 点击 iframe 主体...")
-            iframe.ele('tag:body').click(by_js=True)
+            iframe_body = iframe.ele('tag:body', timeout=1)
+            if iframe_body:
+                iframe_body.click(by_js=True)
+                return True
+            iframe.click(by_js=True)
             return True
             
     # 2. 外部扫描
@@ -133,42 +143,48 @@ def analyze_page_alert(page):
 
 # ==================== 主程序 ====================
 def job():
-    # 1. 准备插件
-    path_silk = download_silk()
-    path_cf = download_cf_autoclick()
-    
-    # 2. 配置浏览器
-    co = ChromiumOptions()
-    co.set_argument('--headless=new')
-    co.set_argument('--no-sandbox')
-    co.set_argument('--disable-gpu')
-    co.set_argument('--disable-dev-shm-usage')
-    co.set_argument('--window-size=1920,1080')
-    co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
-    
-    # 3. 同时挂载两个插件
-    plugin_count = 0
-    if path_silk: 
-        co.add_extension(path_silk)
-        plugin_count += 1
-    if path_cf: 
-        co.add_extension(path_cf)
-        plugin_count += 1
-        
-    log(f">>> [浏览器] 已挂载插件数量: {plugin_count}")
-        
-    co.auto_port()
-    page = ChromiumPage(co)
-    page.set.timeouts(15)
-
+    page = None
     try:
         email = os.environ.get("KB_EMAIL")
         password = os.environ.get("KB_PASSWORD")
         target_url = os.environ.get("KB_RENEW_URL")
         
-        if not all([email, password, target_url]): 
-            log("❌ 配置缺失")
-            exit(1)
+        missing_env = [name for name, value in {
+            "KB_EMAIL": email,
+            "KB_PASSWORD": password,
+            "KB_RENEW_URL": target_url
+        }.items() if not value]
+        if missing_env:
+            log(f"❌ 配置缺失: {', '.join(missing_env)}")
+            return 1
+
+        # 1. 准备插件
+        path_silk = download_silk()
+        path_cf = download_cf_autoclick()
+        
+        # 2. 配置浏览器
+        co = ChromiumOptions()
+        co.set_argument('--headless=new')
+        co.set_argument('--no-sandbox')
+        co.set_argument('--disable-gpu')
+        co.set_argument('--disable-dev-shm-usage')
+        co.set_argument('--window-size=1920,1080')
+        co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
+        
+        # 3. 同时挂载两个插件
+        plugin_count = 0
+        if path_silk:
+            co.add_extension(path_silk)
+            plugin_count += 1
+        if path_cf:
+            co.add_extension(path_cf)
+            plugin_count += 1
+            
+        log(f">>> [浏览器] 已挂载插件数量: {plugin_count}")
+            
+        co.auto_port()
+        page = ChromiumPage(co)
+        page.set.timeouts(15)
 
         # Step 1: 登录
         log(">>> [Step 1] 登录...")
@@ -179,7 +195,10 @@ def job():
             page.ele('css:input[name="email"]').input(email)
             page.ele('css:input[name="password"]').input(password)
             page.ele('css:button#submit').click()
-            page.wait.url_change('login', exclude=True, timeout=20)
+            try:
+                page.wait.url_change('login', exclude=True, timeout=20)
+            except Exception:
+                log("⚠️ 登录后页面跳转超时，继续检查后续页面状态...")
         
         # Step 2: 循环重试
         max_retries = 3
@@ -244,13 +263,15 @@ def job():
             
             if attempt == max_retries:
                 log("❌ 最大重试次数已达，任务终止。")
-                exit(1)
+                return 1
 
     except Exception as e:
         log(f"❌ 异常: {e}")
-        exit(1)
+        return 1
     finally:
-        page.quit()
+        if page:
+            page.quit()
+    return 0
 
 if __name__ == "__main__":
-    job()
+    sys.exit(job())
