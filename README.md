@@ -1,5 +1,4 @@
 # Katabump-Renewal
-Katabump续期脚本
 Katabump 自动化续约脚本 (GitHub Actions 版本)
 这是一个运行在 GitHub Actions 上的自动化脚本，用于自动续期 Katabump 面板上的服务器。
 针对 Cloudflare 验证进行了深度优化，能够自动下载并配置 Silk Privacy Pass Client 插件，实现零人工干预的自动过盾和续期。
