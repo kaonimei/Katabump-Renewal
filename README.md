@@ -1,10 +1,10 @@
 # Katabump-Renewal
 Katabump 自动化续约脚本 (GitHub Actions 版本)
 这是一个运行在 GitHub Actions 上的自动化脚本，用于自动续期 Katabump 面板上的服务器。
-针对 Cloudflare 验证进行了深度优化，能够自动下载并配置 Silk Privacy Pass Client 插件，实现零人工干预的自动过盾和续期。
+针对 Cloudflare 验证进行了优化，支持可选的 CapSolver Turnstile 自动解题，并保留浏览器侧兜底流程。
 续期。
 ✨ 功能特性
- 🛡️ 自动过盾：脚本启动时自动从官方下载 Silk 隐私通行证客户端插件并挂载，有效通过 Cloudflare 5秒盾。
+ 🛡️ 自动过盾：支持可选 CapSolver Turnstile token 注入方案，失败时自动回退到页面轮询与补刀流程。
 👥 多账号续期：支持单账号环境变量，也支持 JSON 数组格式的多账号配置。
 🔔 Telegram 通知：任务开始/结束自动推送执行结果到 TG。
 📲 TG 手动触发：支持通过 `repository_dispatch` 事件由 TG Bot 间接触发执行。
@@ -47,6 +47,9 @@ Settings -> Secrets and variables -> Actions -> New repository secret
 Telegram 通知：
 - `TG_BOT_TOKEN`
 - `TG_CHAT_ID`
+
+可选（推荐，Turnstile 稳定性增强）：
+- `CAPSOLVER_API_KEY`
 
 第三步：启用和测试
  自动运行：配置完成后，脚本将按照 ⁠renew.yml⁠ 中的设置（默认每天）自动运行。

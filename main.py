@@ -75,19 +75,6 @@ def download_silk():
         return os.path.abspath(extract_dir)
     return None
 
-def download_cf_autoclick():
-    extract_root = "extensions/cf_autoclick_root"
-    if not os.path.exists(extract_root):
-        log(">>> [插件2] 正在下载 CF-AutoClick (Master)...")
-        url = "https://codeload.github.com/tenacious6/cf-autoclick/zip/refs/heads/master"
-        if not download_and_extract_zip(url, extract_root, "插件2"):
-            return None
-    for root, dirs, files in os.walk(extract_root):
-        if "manifest.json" in files:
-            log(f"✅ [插件2] 路径锁定: {os.path.basename(root)}")
-            return os.path.abspath(root)
-    return None
-
 def pass_full_page_shield(page):
     for _ in range(6):
         title = (page.title or "").lower()
@@ -162,6 +149,127 @@ def nudge_turnstile(page):
     except Exception as e:
         log(f"⚠️ 补刀失败: {e}")
 
+def extract_turnstile_sitekey(page):
+    try:
+        sitekey = page.run_js("""
+            const frames = Array.from(document.querySelectorAll('iframe[src*="turnstile"], iframe[src*="cloudflare"]'));
+            for (const frame of frames) {
+                const src = frame.getAttribute('src') || '';
+                if (!src) continue;
+                try {
+                    const u = new URL(src, location.href);
+                    const sk = u.searchParams.get('sitekey') || u.searchParams.get('k');
+                    if (sk) return sk;
+                } catch (e) {}
+                const m = src.match(/[?&](?:sitekey|k)=([^&]+)/i);
+                if (m && m[1]) return decodeURIComponent(m[1]);
+            }
+            const widget = document.querySelector('.cf-turnstile,[data-sitekey]');
+            if (widget) {
+                const sk = widget.getAttribute('data-sitekey');
+                if (sk) return sk;
+            }
+            return '';
+        """)
+        return str(sitekey or "").strip()
+    except Exception:
+        return ""
+
+def inject_turnstile_token(page, token):
+    if not token:
+        return False
+    try:
+        count = page.run_js("""
+            const token = arguments[0];
+            let filled = 0;
+            const selectors = [
+                'input[name="cf-turnstile-response"]',
+                'textarea[name="cf-turnstile-response"]'
+            ];
+            for (const selector of selectors) {
+                const nodes = document.querySelectorAll(selector);
+                for (const node of nodes) {
+                    node.value = token;
+                    node.dispatchEvent(new Event('input', { bubbles: true }));
+                    node.dispatchEvent(new Event('change', { bubbles: true }));
+                    filled += 1;
+                }
+            }
+            const widgets = document.querySelectorAll('.cf-turnstile,[data-sitekey]');
+            for (const w of widgets) {
+                const cb = w.getAttribute('data-callback');
+                if (cb && typeof window[cb] === 'function') {
+                    try { window[cb](token); } catch (e) {}
+                }
+            }
+            return filled;
+        """, token)
+        return bool(count)
+    except Exception:
+        return False
+
+def solve_turnstile_by_capsolver(page, page_url, timeout=120):
+    api_key = os.environ.get("CAPSOLVER_API_KEY", "").strip()
+    if not api_key:
+        return False
+    sitekey = extract_turnstile_sitekey(page)
+    if not sitekey:
+        log("⚠️ [CapSolver] 未获取到 Turnstile sitekey，跳过")
+        return False
+
+    try:
+        create_resp = requests.post(
+            "https://api.capsolver.com/createTask",
+            json={
+                "clientKey": api_key,
+                "task": {
+                    "type": "AntiTurnstileTaskProxyLess",
+                    "websiteURL": page_url,
+                    "websiteKey": sitekey
+                }
+            },
+            timeout=20
+        )
+        data = create_resp.json()
+    except Exception as e:
+        log(f"⚠️ [CapSolver] createTask 失败: {e}")
+        return False
+
+    task_id = data.get("taskId")
+    if not task_id:
+        log(f"⚠️ [CapSolver] createTask 返回异常: {data}")
+        return False
+
+    log(">>> [CapSolver] 任务已创建，等待返回 token...")
+    waited = 0
+    while waited < timeout:
+        time.sleep(3)
+        waited += 3
+        try:
+            poll_resp = requests.post(
+                "https://api.capsolver.com/getTaskResult",
+                json={"clientKey": api_key, "taskId": task_id},
+                timeout=20
+            )
+            poll_data = poll_resp.json()
+        except Exception as e:
+            log(f"⚠️ [CapSolver] 轮询异常: {e}")
+            continue
+
+        status = str(poll_data.get("status", "")).lower()
+        if status == "ready":
+            token = str((poll_data.get("solution") or {}).get("token", "")).strip()
+            if token and inject_turnstile_token(page, token):
+                log(f"✅ [CapSolver] token 已注入 (耗时 {waited}s)")
+                return True
+            log("⚠️ [CapSolver] token 注入失败")
+            return False
+        if status == "failed" or poll_data.get("errorId"):
+            log(f"⚠️ [CapSolver] 解题失败: {poll_data}")
+            return False
+    log("⚠️ [CapSolver] 解题超时")
+    return False
+
 def do_login(page, email, password):
     log(">>> 打开登录页...")
     page.get("https://dashboard.katabump.com/auth/login")
@@ -187,7 +295,12 @@ def do_login(page, email, password):
     else:
         log("⚠️ 未检测到 Turnstile iframe，继续轮询是否自动放行")
 
-    if not wait_turnstile_ready(page, timeout=90):
+    solved = False
+    if iframe:
+        solved = solve_turnstile_by_capsolver(page, page.url or "https://dashboard.katabump.com/auth/login")
+    if solved:
+        wait_turnstile_ready(page, timeout=30)
+    elif not wait_turnstile_ready(page, timeout=90):
         nudge_turnstile(page)
         wait_turnstile_ready(page, timeout=30)
 
@@ -346,7 +459,7 @@ def send_telegram_message(text):
         log(f"⚠️ TG 网络异常: {e}")
         return False
 
-def create_page(path_silk, path_cf, account_index):
+def create_page(path_silk, account_index):
     co = ChromiumOptions()
     co.set_argument("--headless=new")
     co.set_argument("--no-sandbox")
@@ -400,9 +513,6 @@ def create_page(path_silk, path_cf, account_index):
     if path_silk:
         co.add_extension(path_silk)
         plugin_count += 1
-    if path_cf:
-        co.add_extension(path_cf)
-        plugin_count += 1
     log(f">>> [浏览器] 已挂载插件数量: {plugin_count}")
     log(f">>> ChromiumOptions.address = {getattr(co, 'address', None)!r}")
 
@@ -410,12 +520,12 @@ def create_page(path_silk, path_cf, account_index):
     page.set.timeouts(15)
     return page
 
-def renew_single_account(email, password, target_url, path_silk, path_cf, account_index, total_accounts):
+def renew_single_account(email, password, target_url, path_silk, account_index, total_accounts):
     page = None
     last_error = None
     try:
         log(f"================ 账号 {account_index}/{total_accounts} 开始 ================")
-        page = create_page(path_silk, path_cf, account_index)
+        page = create_page(path_silk, account_index)
 
         log(">>> [Step 1] 登录...")
         if not do_login(page, email, password):
@@ -530,7 +640,6 @@ def job():
         return 1
 
     path_silk = download_silk()
-    path_cf = download_cf_autoclick()
 
     trigger_source = os.environ.get("RUN_TRIGGER_SOURCE", "unknown")
     send_telegram_message(
@@ -545,7 +654,6 @@ def job():
             account["password"],
             account["url"],
             path_silk,
-            path_cf,
             index,
             len(accounts)
         )
