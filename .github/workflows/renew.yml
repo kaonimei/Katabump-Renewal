@@ -26,6 +26,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable xvfb
+          
+          # 获取 Chrome 版本
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          echo "Chrome version: $CHROME_VERSION"
+          
+          # 获取主版本号
+          CHROME_MAJOR=$(echo $CHROME_VERSION | cut -d. -f1)
+          echo "Chrome major version: $CHROME_MAJOR"
+          
+          # 下载对应版本的 ChromeDriver
+          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip || \
+          wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip
+          
+          # 解压并安装
+          sudo unzip -o /tmp/chromedriver.zip -d /tmp/
+          sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/
+          sudo chmod +x /usr/local/bin/chromedriver
+          
+          # 验证版本
+          chromedriver --version
 
       - name: Install Python Dependencies
         run: pip install requests undetected-chromedriver selenium
