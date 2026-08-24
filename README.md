@@ -1,70 +1,57 @@
 # Katabump-Renewal
-Katabump 自动化续约脚本 (GitHub Actions 版本)
-这是一个运行在 GitHub Actions 上的自动化脚本，用于自动续期 Katabump 面板上的服务器。
-针对 Cloudflare 验证进行了优化，支持可选的 CapSolver Turnstile 自动解题，并保留浏览器侧兜底流程。
-续期。
-✨ 功能特性
- 🛡️ 自动过盾：支持可选 CapSolver Turnstile token 注入方案，失败时自动回退到页面轮询与补刀流程。
-👥 多账号续期：支持单账号环境变量，也支持 JSON 数组格式的多账号配置。
-🔔 Telegram 通知：任务开始/结束自动推送执行结果到 TG。
-📲 TG 手动触发：支持通过 `repository_dispatch` 事件由 TG Bot 间接触发执行。
-🤖 全自动流程：下载插件 -> 登录 -> 进入服务器 -> 点击续期 -> 处理弹窗 -> 确认。
-⏰ 定时运行：默认每天自动执行一次续期任务。
 
- 🚀 部署指南
-第一步：准备源码
-将本项目的所有文件上传到你的 GitHub 仓库。
-第二步：设置 GitHub Secrets（关键）
-进入你的 GitHub 仓库，依序点击：
-Settings -> Secrets and variables -> Actions -> New repository secret
+基于 GitHub Actions + SeleniumBase 的 Katabump 自动化续期脚本。
 
-请新增以下密钥变量：
+## 项目说明
 
-必需（推荐，多账号）：
-- `KB_ACCOUNTS_JSON`
+当前仓库核心文件：
 
-示例（JSON 数组）：
-```json
-[
-  {
-    "email": "user1@example.com",
-    "password": "password123",
-    "url": "https://dashboard.katabump.com/renew?id=xxx"
-  },
-  {
-    "email": "user2@example.com",
-    "password": "password456",
-    "url": "https://dashboard.katabump.com/renew?id=yyy"
-  }
-]
+- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/main.py`：自动化脚本（登录、验证码处理、退出、Telegram 通知等逻辑）
+- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew.yml`：GitHub Actions 定时任务
+
+## 功能特性
+
+- 支持多账号（通过一个环境变量传入多个 `email:password`）
+- 自动处理 Cloudflare Turnstile（含重试）
+- 支持 Telegram 执行结果通知
+- 支持 GitHub Actions 定时执行和手动触发
+
+## 环境变量
+
+### 必需
+
+- `KATABUMP_ACCOUNTS`
+
+格式为逗号分隔的账号对，每个账号为 `email:password`：
+
+```text
+user1@example.com:pass1,user2@example.com:pass2
 ```
 
-兼容（旧版单账号，可不填 JSON 时使用）：
-- `KB_EMAIL`
-- `KB_PASSWORD`
-- `KB_RENEW_URL`
+### 可选（Telegram 通知）
 
-Telegram 通知：
 - `TG_BOT_TOKEN`
 - `TG_CHAT_ID`
 
-可选（推荐，Turnstile 稳定性增强）：
-- `CAPSOLVER_API_KEY`
+如果未配置，脚本会自动跳过 Telegram 推送。
 
-第三步：启用和测试
- 自动运行：配置完成后，脚本将按照 ⁠renew.yml⁠ 中的设置（默认每天）自动运行。
- 手动测试：
-1. 点击仓库上方的 Actions 标签。
-2. 在左侧选择 Katabump 自动更新 工作流。
-3. 点击右侧的 Run workflow 下拉按钮，再点击绿色的 Run workflow。
-4. 等待运行完成，成功后日志将显示 ⁠🎉🎉🎉 续期成功！任务完成。⁠
+## GitHub Actions 配置
 
-通过 TG 手动触发（间接）：
-1. 让你的 TG Bot 或中间服务调用 GitHub API 发送 `repository_dispatch`。
-2. `event_type` 使用 `tg_manual_renew`。
-3. 触发后该工作流会立即执行，并发送 TG 结果通知。
+1. 打开仓库 `Settings -> Secrets and variables -> Actions`
+2. 添加上述环境变量为 Repository Secrets
+3. 在 `Actions` 页面手动运行工作流，或等待定时触发
 
-常见问题：
- ⁠login_fail.jpg⁠：登录失败（可能是密码错误或被验证码拦截）。
- ⁠no_renew.jpg⁠：未找到续期按钮（可能是服务器暂不需要续期，或页面加载较慢）。
- ⁠crash.jpg⁠：脚本崩溃报错截图。
+默认工作流文件：`/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew.yml`
+
+## 本地运行（可选）
+
+```bash
+pip install seleniumbase requests
+python3 /home/runner/work/Katabump-Renewal/Katabump-Renewal/main.py
+```
+
+## 注意事项
+
+- 该脚本依赖浏览器自动化环境（CI 中建议使用 `xvfb-run`）
+- 账号信息请仅通过 Secrets 配置，不要写入仓库
+- 若页面结构变化，续期流程可能需要同步调整脚本
