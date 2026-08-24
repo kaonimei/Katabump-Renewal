@@ -17,6 +17,19 @@ BASE_URL = "https://dashboard.katabump.com"
 
 # ── 解析账号 ────────────────────────────────────────────────────────────────────
 
+def ensure_local_no_proxy():
+    """确保 WebDriver 本地回环地址不走代理。"""
+    local_hosts = ("127.0.0.1", "localhost", "::1")
+    for key in ("NO_PROXY", "no_proxy"):
+        current = os.environ.get(key, "")
+        items = [item.strip() for item in current.split(",") if item.strip()]
+        seen = {item.lower() for item in items}
+        for host in local_hosts:
+            if host.lower() not in seen:
+                items.append(host)
+                seen.add(host.lower())
+        os.environ[key] = ",".join(items)
+
 def parse_accounts():
     """解析逗号分隔的 email:password 对，返回元组列表"""
     if not ACCOUNTS_RAW:
@@ -499,6 +512,7 @@ def renew_account(sb, email: str, password: str) -> bool:
 
 
 def main() -> int:
+    ensure_local_no_proxy()
     accounts = parse_accounts()
     if not accounts:
         print("❌ 未检测到有效账号。请设置 KATABUMP_ACCOUNTS（格式: email:password,...)")
