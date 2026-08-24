@@ -206,7 +206,7 @@ def renew_single_account(email, password, target_url, account_index, total_accou
         options.add_argument('--disable-blink-features=AutomationControlled')
         
         log(">>> 启动浏览器...")
-        driver = uc.Chrome(options=options, version_main=131)
+        driver = uc.Chrome(options=options, use_subprocess=True)
         driver.set_page_load_timeout(60)
         
         # Step 1: 登录
