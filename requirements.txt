@@ -1,3 +1,0 @@
-requests
-undetected-chromedriver
-selenium
