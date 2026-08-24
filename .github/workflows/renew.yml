@@ -9,12 +9,10 @@ on:
 
 jobs:
   renew_job:
-    permissions:
-      contents: read
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -22,25 +20,8 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Chrome, Xvfb and ChromeDriver
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable xvfb unzip wget
-
-          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
-          echo "Chrome version: $CHROME_VERSION"
-
-          mkdir -p "$HOME/chromedriver"
-          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip || \
-          wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip
-
-          unzip -o /tmp/chromedriver.zip -d /tmp/
-          mv /tmp/chromedriver-linux64/chromedriver "$HOME/chromedriver/"
-          chmod +x "$HOME/chromedriver/chromedriver"
-          "$HOME/chromedriver/chromedriver" --version
-
-      - name: Install Python Dependencies
-        run: pip install requests undetected-chromedriver selenium
+      - name: Install Dependencies
+        run: pip install DrissionPage requests
 
       - name: Run Renew Script
         env:
@@ -48,4 +29,4 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           RUN_TRIGGER_SOURCE: ${{ github.event_name }}
-        run: xvfb-run -a python -u main.py
+        run: python -u main.py
