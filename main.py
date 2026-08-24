@@ -6,6 +6,7 @@ import zipfile
 import io
 import datetime
 import re
+import json
 from DrissionPage import ChromiumPage, ChromiumOptions
 
 # ==================== 基础工具 ====================
@@ -142,27 +143,71 @@ def analyze_page_alert(page):
     return "UNKNOWN"
 
 # ==================== 主程序 ====================
-def job():
+def load_accounts():
+    accounts_json = os.environ.get("KB_ACCOUNTS_JSON", "").strip()
+    if accounts_json:
+        try:
+            data = json.loads(accounts_json)
+            if not isinstance(data, list):
+                log("❌ KB_ACCOUNTS_JSON 必须是数组")
+                return None
+
+            accounts = []
+            for index, item in enumerate(data, start=1):
+                if not isinstance(item, dict):
+                    log(f"❌ 第 {index} 个账号配置不是对象")
+                    return None
+
+                email = str(item.get("email", "")).strip()
+                password = str(item.get("password", "")).strip()
+                target_url = str(item.get("url", "")).strip()
+                if not email or not password or not target_url:
+                    log(f"❌ 第 {index} 个账号缺少 email/password/url")
+                    return None
+                accounts.append({"email": email, "password": password, "url": target_url})
+            return accounts
+        except json.JSONDecodeError as e:
+            log(f"❌ KB_ACCOUNTS_JSON 不是合法 JSON: {e}")
+            return None
+
+    email = os.environ.get("KB_EMAIL")
+    password = os.environ.get("KB_PASSWORD")
+    target_url = os.environ.get("KB_RENEW_URL")
+    missing_env = [name for name, value in {
+        "KB_EMAIL": email,
+        "KB_PASSWORD": password,
+        "KB_RENEW_URL": target_url
+    }.items() if not value]
+    if missing_env:
+        log(f"❌ 配置缺失: {', '.join(missing_env)}")
+        log("❌ 你可以改用 KB_ACCOUNTS_JSON 传入多账号配置")
+        return None
+    return [{"email": email, "password": password, "url": target_url}]
+
+def send_telegram_message(text):
+    tg_token = os.environ.get("TG_BOT_TOKEN", "").strip()
+    tg_chat_id = os.environ.get("TG_CHAT_ID", "").strip()
+    if not tg_token or not tg_chat_id:
+        return False
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{tg_token}/sendMessage",
+            json={"chat_id": tg_chat_id, "text": text},
+            timeout=15
+        )
+        if resp.status_code != 200:
+            log(f"⚠️ TG 发送失败: HTTP {resp.status_code}")
+            return False
+        return True
+    except requests.RequestException as e:
+        log(f"⚠️ TG 网络异常: {e}")
+        return False
+
+def renew_single_account(email, password, target_url, path_silk, path_cf, account_index, total_accounts):
     page = None
     try:
-        email = os.environ.get("KB_EMAIL")
-        password = os.environ.get("KB_PASSWORD")
-        target_url = os.environ.get("KB_RENEW_URL")
-        
-        missing_env = [name for name, value in {
-            "KB_EMAIL": email,
-            "KB_PASSWORD": password,
-            "KB_RENEW_URL": target_url
-        }.items() if not value]
-        if missing_env:
-            log(f"❌ 配置缺失: {', '.join(missing_env)}")
-            return 1
-
-        # 1. 准备插件
-        path_silk = download_silk()
-        path_cf = download_cf_autoclick()
-        
-        # 2. 配置浏览器
+        log(f"================ 账号 {account_index}/{total_accounts} 开始 =================")
+        # 1. 配置浏览器
         co = ChromiumOptions()
         co.set_argument('--headless=new')
         co.set_argument('--no-sandbox')
@@ -171,7 +216,7 @@ def job():
         co.set_argument('--window-size=1920,1080')
         co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36')
         
-        # 3. 同时挂载两个插件
+        # 2. 同时挂载两个插件
         plugin_count = 0
         if path_silk:
             co.add_extension(path_silk)
@@ -245,7 +290,7 @@ def job():
                         result = analyze_page_alert(page)
                         
                         if result == "SUCCESS" or result == "SUCCESS_TOO_EARLY":
-                            break 
+                            return result
                         
                         if result == "FAIL_CAPTCHA":
                             log("⚠️ 验证未通过，刷新重试...")
@@ -263,15 +308,58 @@ def job():
             
             if attempt == max_retries:
                 log("❌ 最大重试次数已达，任务终止。")
-                return 1
+                return "FAIL_MAX_RETRY"
+
+        return "UNKNOWN"
 
     except Exception as e:
         log(f"❌ 异常: {e}")
-        return 1
+        return "FAIL_EXCEPTION"
     finally:
         if page:
             page.quit()
-    return 0
+
+def job():
+    accounts = load_accounts()
+    if not accounts:
+        return 1
+
+    # 准备插件（所有账号复用）
+    path_silk = download_silk()
+    path_cf = download_cf_autoclick()
+
+    trigger_source = os.environ.get("RUN_TRIGGER_SOURCE", "unknown")
+    send_telegram_message(f"🚀 Katabump 续期任务开始\n触发方式: {trigger_source}\n账号数量: {len(accounts)}")
+
+    result_lines = []
+    has_failure = False
+    for index, account in enumerate(accounts, start=1):
+        status = renew_single_account(
+            account["email"],
+            account["password"],
+            account["url"],
+            path_silk,
+            path_cf,
+            index,
+            len(accounts)
+        )
+
+        if status in ("SUCCESS", "SUCCESS_TOO_EARLY"):
+            status_text = "✅ 成功" if status == "SUCCESS" else "✅ 未到续期时间"
+        else:
+            status_text = f"❌ 失败({status})"
+            has_failure = True
+
+        email_hint = account["email"][:3] + "***" if account["email"] else "unknown"
+        result_lines.append(f"{index}. {email_hint}: {status_text}")
+
+    summary = "\n".join(result_lines)
+    final_message = f"📣 Katabump 续期任务结束\n触发方式: {trigger_source}\n\n{summary}"
+    send_telegram_message(final_message)
+
+    log("===== 任务汇总 =====")
+    log(summary)
+    return 1 if has_failure else 0
 
 if __name__ == "__main__":
     sys.exit(job())

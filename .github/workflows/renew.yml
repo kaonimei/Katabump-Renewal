@@ -2,8 +2,10 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-    - cron: '0 12 */2 * *'
+    - cron: '0 12 * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types: [tg_manual_renew]
 
 jobs:
   renew_job:
@@ -31,9 +33,13 @@ jobs:
 
       - name: Run Renew Script
         env:
+          KB_ACCOUNTS_JSON: ${{ secrets.KB_ACCOUNTS_JSON }}
           KB_EMAIL: ${{ secrets.KB_EMAIL }}
           KB_PASSWORD: ${{ secrets.KB_PASSWORD }}
           KB_RENEW_URL: ${{ secrets.KB_RENEW_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          RUN_TRIGGER_SOURCE: ${{ github.event_name }}
         run: |
           # 启动 Python (带 -u 参数实时输出)
           python -u main.py
