@@ -40,50 +40,50 @@ jobs:
 
         extract_first_proxy() {
           python - <<'PY'
-import base64
-import re
-import sys
-import urllib.parse
+        import base64
+        import re
+        import sys
+        import urllib.parse
 
-text = sys.stdin.read().strip()
-if not text:
-    sys.exit(0)
+        text = sys.stdin.read().strip()
+        if not text:
+            sys.exit(0)
 
-schemes = ("vless", "vmess", "trojan", "tuic", "hysteria2", "hy2", "ss", "ssr", "socks5", "socks", "http", "https")
-pattern = re.compile(r'(?i)\b(?:' + "|".join(schemes) + r')://[^\s,]+')
+        schemes = ("vless", "vmess", "trojan", "tuic", "hysteria2", "hy2", "ss", "ssr", "socks5", "socks", "http", "https")
+        pattern = re.compile(r'(?i)\b(?:' + "|".join(schemes) + r')://[^\s,]+')
 
-def find_proxy(value: str) -> str:
-    value = value.strip()
-    if not value:
-        return ""
+        def find_proxy(value: str) -> str:
+            value = value.strip()
+            if not value:
+                return ""
 
-    match = pattern.search(value)
-    if match:
-        return match.group(0)
+            match = pattern.search(value)
+            if match:
+                return match.group(0)
 
-    for token in re.split(r'[\n,\s]+', value):
-        token = urllib.parse.unquote(token.strip())
-        if pattern.match(token):
-            return token
-    return ""
+            for token in re.split(r'[\n,\s]+', value):
+                token = urllib.parse.unquote(token.strip())
+                if pattern.match(token):
+                    return token
+            return ""
 
-found = find_proxy(text)
-if found:
-    print(found)
-    sys.exit(0)
+        found = find_proxy(text)
+        if found:
+            print(found)
+            sys.exit(0)
 
-compact = re.sub(r'\s+', '', text)
-for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-    try:
-        padding = "=" * ((4 - (len(compact) % 4)) % 4)
-        decoded = decoder((compact + padding).encode("utf-8")).decode("utf-8", errors="ignore")
-    except Exception:
-        continue
-    found = find_proxy(decoded)
-    if found:
-        print(found)
-        break
-PY
+        compact = re.sub(r'\s+', '', text)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                padding = "=" * ((4 - (len(compact) % 4)) % 4)
+                decoded = decoder((compact + padding).encode("utf-8")).decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+            found = find_proxy(decoded)
+            if found:
+                print(found)
+                break
+        PY
         }
 
         extracted_link="$(printf '%s' "${NODE_LINK}" | extract_first_proxy)"
