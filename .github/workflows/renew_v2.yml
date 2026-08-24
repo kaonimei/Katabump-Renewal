@@ -126,19 +126,44 @@ jobs:
         script_urls=(
           "https://main.ssss.nyc.mn/setup_proxy.sh"
           "https://proxy-gh.ssss.nyc.mn/https://raw.githubusercontent.com/yujinlong/Build-OpenWrt/main/setup_proxy.sh"
+          "https://raw.githubusercontent.com/yujinlong/Build-OpenWrt/main/setup_proxy.sh"
         )
 
         setup_ok=0
         for script_url in "${script_urls[@]}"; do
           echo "尝试代理初始化脚本: ${script_url}"
-          if bash <(curl -fsSL --retry 2 --connect-timeout 15 "${script_url}"); then
+          if bash <(curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 40 "${script_url}"); then
             setup_ok=1
             break
           fi
         done
 
+        proxy_server=""
+        for candidate in "socks5://127.0.0.1:1080" "http://127.0.0.1:1081"; do
+          if curl -x "${candidate}" -fsS --max-time 15 https://api.ipify.org >/dev/null 2>&1; then
+            proxy_server="${candidate}"
+            break
+          fi
+        done
+
+        if [ -n "${proxy_server}" ]; then
+          echo "检测到可用代理出口: ${proxy_server}"
+          {
+            echo "PROXY_SERVER=${proxy_server}"
+            echo "ALL_PROXY=${proxy_server}"
+            echo "HTTP_PROXY=${proxy_server}"
+            echo "HTTPS_PROXY=${proxy_server}"
+            echo "all_proxy=${proxy_server}"
+            echo "http_proxy=${proxy_server}"
+            echo "https_proxy=${proxy_server}"
+          } >> "${GITHUB_ENV}"
+          setup_ok=1
+        fi
+
         if [ "${setup_ok}" -ne 1 ]; then
           echo "代理初始化失败，继续直连执行。"
+        else
+          echo "代理初始化完成。"
         fi
 
     - name: 🚀 运行续期脚本
@@ -148,6 +173,12 @@ jobs:
         KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        ALL_PROXY: ${{ env.ALL_PROXY }}
+        HTTP_PROXY: ${{ env.HTTP_PROXY }}
+        HTTPS_PROXY: ${{ env.HTTPS_PROXY }}
+        all_proxy: ${{ env.all_proxy }}
+        http_proxy: ${{ env.http_proxy }}
+        https_proxy: ${{ env.https_proxy }}
       run: |
         if [ -z "${KATABUMP_ACCOUNTS}" ] && [ -n "${KATABUMP_EMAIL}" ] && [ -n "${KATABUMP_PASSWORD}" ]; then
           export KATABUMP_ACCOUNTS="${KATABUMP_EMAIL}:${KATABUMP_PASSWORD}"
