@@ -99,6 +99,69 @@ def pass_full_page_shield(page):
     log("--- [门神] 全屏盾可能未通过，继续执行...")
     return False
 
+def wait_turnstile_ready(page, timeout=90):
+    saw_iframe = False
+    for second in range(timeout):
+        try:
+            state = page.run_js("""
+                const iframes = Array.from(document.querySelectorAll('iframe'));
+                const hasIframe = iframes.some(f => {
+                    const src = (f.getAttribute('src') || '').toLowerCase();
+                    return src.includes('turnstile') || src.includes('cloudflare');
+                });
+                const tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
+                const token = tokenInput ? (tokenInput.value || '') : '';
+                return { hasIframe, hasToken: !!token };
+            """)
+            if isinstance(state, dict):
+                has_iframe = bool(state.get("hasIframe"))
+                has_token = bool(state.get("hasToken"))
+            else:
+                has_iframe = False
+                has_token = False
+            if has_iframe:
+                saw_iframe = True
+            if has_token:
+                log(f"✅ [Turnstile] 检测到 token，等待 {second}s 后继续")
+                return True
+            if saw_iframe and not has_iframe:
+                log(f"✅ [Turnstile] 验证 iframe 已消失，等待 {second}s 后继续")
+                return True
+        except Exception:
+            pass
+        if second > 0 and second % 10 == 0:
+            log(f">>> [Turnstile] 等待中... {second}/{timeout}s")
+        time.sleep(1)
+    if saw_iframe:
+        log("⚠️ [Turnstile] 超时，准备补刀后继续")
+        return False
+    log(">>> [Turnstile] 未检测到挑战组件，继续执行")
+    return True
+
+def nudge_turnstile(page):
+    log(">>> [补刀] 尝试点击 Turnstile...")
+    try:
+        iframes = page.eles("tag:iframe")
+        log(f"  找到 {len(iframes)} 个 iframe")
+        for idx, fr in enumerate(iframes):
+            try:
+                checkbox = fr.ele('css:input[type="checkbox"]', timeout=1)
+                if checkbox:
+                    log(f"  iframe[{idx}] 点击 checkbox")
+                    checkbox.click(by_js=True)
+                    time.sleep(3)
+                    return
+                body = fr.ele("tag:body", timeout=1)
+                if body:
+                    log(f"  iframe[{idx}] 点击 body")
+                    body.click(by_js=True)
+                    time.sleep(3)
+                    return
+            except Exception:
+                continue
+    except Exception as e:
+        log(f"⚠️ 补刀失败: {e}")
+
 def do_login(page, email, password):
     log(">>> 打开登录页...")
     page.get("https://dashboard.katabump.com/auth/login")
@@ -117,37 +180,16 @@ def do_login(page, email, password):
     page.ele('css:input[name="password"]').input(password)
 
     log(">>> 等待 Turnstile 加载...")
-    time.sleep(5)
+    time.sleep(3)
     iframe = page.ele('css:iframe[src*="turnstile"], iframe[src*="cloudflare"]', timeout=5)
     if iframe:
-        log(">>> 检测到 Turnstile，等待处理 (60s)...")
-        time.sleep(60)
+        log(">>> 检测到 Turnstile，等待验证结果...")
     else:
-        log("⚠️ 未检测到 Turnstile iframe，仍等待 60s...")
-        time.sleep(60)
+        log("⚠️ 未检测到 Turnstile iframe，继续轮询是否自动放行")
 
-    log(">>> [补刀] 尝试点击 Turnstile...")
-    try:
-        iframes = page.eles("tag:iframe")
-        log(f"  找到 {len(iframes)} 个 iframe")
-        for idx, fr in enumerate(iframes):
-            try:
-                checkbox = fr.ele('css:input[type="checkbox"]', timeout=1)
-                if checkbox:
-                    log(f"  iframe[{idx}] 点击 checkbox")
-                    checkbox.click(by_js=True)
-                    time.sleep(3)
-                    break
-                body = fr.ele("tag:body", timeout=1)
-                if body:
-                    log(f"  iframe[{idx}] 点击 body")
-                    body.click(by_js=True)
-                    time.sleep(3)
-                    break
-            except Exception:
-                continue
-    except Exception as e:
-        log(f"⚠️ 补刀失败: {e}")
+    if not wait_turnstile_ready(page, timeout=90):
+        nudge_turnstile(page)
+        wait_turnstile_ready(page, timeout=30)
 
     log(">>> 提交登录...")
     page.ele("css:button#submit").click()
