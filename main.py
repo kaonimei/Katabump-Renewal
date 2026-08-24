@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import socket
+import random
+import base64
 import requests
 import zipfile
 import io
@@ -127,6 +129,8 @@ def wait_turnstile_ready(page, timeout=90):
 
 def nudge_turnstile(page):
     log(">>> [补刀] 尝试点击 Turnstile...")
+    if click_turnstile_by_cdp(page):
+        return
     try:
         iframes = page.eles("tag:iframe")
         log(f"  找到 {len(iframes)} 个 iframe")
@@ -148,6 +152,41 @@ def nudge_turnstile(page):
                 continue
     except Exception as e:
         log(f"⚠️ 补刀失败: {e}")
+
+def get_turnstile_click_point(page):
+    try:
+        point = page.run_js("""
+            const frame = document.querySelector('iframe[src*="turnstile"], iframe[src*="cloudflare"]');
+            if (!frame) return null;
+            const rect = frame.getBoundingClientRect();
+            if (!rect || rect.width < 20 || rect.height < 20) return null;
+            const x = Math.round(rect.left + Math.min(45, rect.width / 2));
+            const y = Math.round(rect.top + rect.height / 2);
+            return { x, y };
+        """)
+        if isinstance(point, dict) and "x" in point and "y" in point:
+            return int(point["x"]), int(point["y"])
+    except Exception:
+        pass
+    return None
+
+def click_turnstile_by_cdp(page):
+    point = get_turnstile_click_point(page)
+    if not point:
+        return False
+    x, y = point
+    x += random.randint(-3, 3)
+    y += random.randint(-3, 3)
+    try:
+        page.run_cdp("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": "none"})
+        page.run_cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
+        page.run_cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
+        log(f"✅ [CDP] 已执行 Turnstile 鼠标点击: ({x}, {y})")
+        time.sleep(2)
+        return True
+    except Exception as e:
+        log(f"⚠️ [CDP] 点击失败: {e}")
+        return False
 
 def extract_turnstile_sitekey(page):
     try:
@@ -292,6 +331,7 @@ def do_login(page, email, password):
     iframe = page.ele('css:iframe[src*="turnstile"], iframe[src*="cloudflare"]', timeout=5)
     if iframe:
         log(">>> 检测到 Turnstile，等待验证结果...")
+        click_turnstile_by_cdp(page)
     else:
         log("⚠️ 未检测到 Turnstile iframe，继续轮询是否自动放行")
 
@@ -440,6 +480,20 @@ def load_accounts():
         return None
     return [{"email": email, "password": password, "url": target_url}]
 
+def get_proxy_server():
+    proxy = (
+        os.environ.get("KB_PROXY_URL", "").strip()
+        or os.environ.get("KB_HYSTERIA2_PROXY", "").strip()
+        or os.environ.get("KB_SOCKS5_PROXY", "").strip()
+        or os.environ.get("KB_HTTP_PROXY", "").strip()
+        or os.environ.get("KB_HTTPS_PROXY", "").strip()
+    )
+    if not proxy:
+        return None
+    if "://" not in proxy:
+        proxy = f"http://{proxy}"
+    return proxy
+
 def send_telegram_message(text):
     tg_token = os.environ.get("TG_BOT_TOKEN", "").strip()
     tg_chat_id = os.environ.get("TG_CHAT_ID", "").strip()
@@ -459,6 +513,43 @@ def send_telegram_message(text):
         log(f"⚠️ TG 网络异常: {e}")
         return False
 
+def send_telegram_photo(photo_path, caption):
+    tg_token = os.environ.get("TG_BOT_TOKEN", "").strip()
+    tg_chat_id = os.environ.get("TG_CHAT_ID", "").strip()
+    if not tg_token or not tg_chat_id or not photo_path or not os.path.exists(photo_path):
+        return False
+    try:
+        with open(photo_path, "rb") as f:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{tg_token}/sendPhoto",
+                data={"chat_id": tg_chat_id, "caption": caption[:1024]},
+                files={"photo": f},
+                timeout=30
+            )
+        if resp.status_code != 200:
+            log(f"⚠️ TG 图片发送失败: HTTP {resp.status_code}")
+            return False
+        return True
+    except requests.RequestException as e:
+        log(f"⚠️ TG 图片发送网络异常: {e}")
+        return False
+
+def capture_page_screenshot(page, account_index, tag):
+    if not page:
+        return None
+    try:
+        os.makedirs("/tmp/kb_snaps", exist_ok=True)
+        ts = int(time.time())
+        path = f"/tmp/kb_snaps/account_{account_index}_{tag}_{ts}.png"
+        data = page.run_cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
+        if isinstance(data, dict) and data.get("data"):
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(data["data"]))
+            return path
+    except Exception as e:
+        log(f"⚠️ 截图失败: {e}")
+    return None
+
 def create_page(path_silk, account_index):
     co = ChromiumOptions()
     co.set_argument("--headless=new")
@@ -467,6 +558,10 @@ def create_page(path_silk, account_index):
     co.set_argument("--disable-dev-shm-usage")
     co.set_argument("--window-size=1920,1080")
     co.set_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+    proxy_server = get_proxy_server()
+    if proxy_server:
+        co.set_argument(f"--proxy-server={proxy_server}")
+        log(f">>> [代理] 已启用: {proxy_server}")
 
     chrome_path = find_chrome_path()
     if chrome_path:
@@ -522,16 +617,18 @@ def create_page(path_silk, account_index):
 
 def renew_single_account(email, password, target_url, path_silk, account_index, total_accounts):
     page = None
-    last_error = None
+    last_error = "FAIL_OTHER"
+    account_outcome = {"status": "FAIL_EXCEPTION", "screenshot": None}
     try:
         log(f"================ 账号 {account_index}/{total_accounts} 开始 ================")
         page = create_page(path_silk, account_index)
 
         log(">>> [Step 1] 登录...")
         if not do_login(page, email, password):
-            return "FAIL_LOGIN_FAILED"
+            account_outcome["status"] = "FAIL_LOGIN_FAILED"
+            return account_outcome
 
-        max_retries = 3
+        max_retries = 20
         for attempt in range(1, max_retries + 1):
             log(f"\n🚀 [Step 2] 尝试续期 (第 {attempt}/{max_retries} 次)...")
             log(f">>> 目标 URL: {target_url}")
@@ -543,6 +640,7 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
                 log("⚠️ 被重定向到登录页，重新登录...")
                 if not do_login(page, email, password):
                     last_error = "FAIL_LOGIN_FAILED"
+                    account_outcome["status"] = last_error
                     continue
                 page.get(target_url)
                 time.sleep(5)
@@ -550,6 +648,7 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
                 if "login" in page.url.lower():
                     log("❌ 重新登录后仍被踢回")
                     last_error = "FAIL_LOGIN_FAILED"
+                    account_outcome["status"] = last_error
                     continue
 
             pass_full_page_shield(page)
@@ -558,10 +657,12 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
             renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]', timeout=15)
             if not renew_btn or not renew_btn.states.is_displayed:
                 log("❌ 未找到续期按钮，检查页面状态...")
-                result = analyze_page_alert(page)
-                if result == "SUCCESS_TOO_EARLY":
-                    return result
+                check_result = analyze_page_alert(page)
+                if check_result == "SUCCESS_TOO_EARLY":
+                    account_outcome["status"] = check_result
+                    break
                 last_error = "FAIL_NO_RENEW_BUTTON"
+                account_outcome["status"] = last_error
                 continue
 
             log("✅ 找到续期按钮")
@@ -586,6 +687,7 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
             if not modal:
                 log("❌ 弹窗未出现")
                 last_error = "FAIL_MODAL_NOT_OPEN"
+                account_outcome["status"] = last_error
                 continue
 
             log("✅ 弹窗已打开")
@@ -593,6 +695,7 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
             if not click_and_wait_altcha(page, timeout=30):
                 log("⚠️ Altcha 未确认完成，仍尝试提交...")
                 last_error = "FAIL_ALTCHA_TIMEOUT"
+                account_outcome["status"] = last_error
 
             confirm_btn = modal.ele("css:button[type='submit'].btn-primary", timeout=5)
             if not confirm_btn:
@@ -600,6 +703,7 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
             if not confirm_btn:
                 log("❌ 弹窗内未找到提交按钮")
                 last_error = "FAIL_NO_SUBMIT_BUTTON"
+                account_outcome["status"] = last_error
                 continue
 
             log(">>> 点击弹窗内 Renew 提交按钮...")
@@ -607,28 +711,40 @@ def renew_single_account(email, password, target_url, path_silk, account_index, 
             log(">>> 等待响应 (8s)...")
             time.sleep(8)
 
-            result = analyze_page_alert(page)
-            log(f">>> 本次结果: {result} ({RESULT_CODES.get(result, result)})")
+            check_result = analyze_page_alert(page)
+            log(f">>> 本次结果: {check_result} ({RESULT_CODES.get(check_result, check_result)})")
 
-            if result in ("SUCCESS", "SUCCESS_TOO_EARLY"):
-                return result
-            if result == "FAIL_CAPTCHA":
-                log("⚠️ 验证码未通过，重试...")
-                last_error = result
-                time.sleep(2)
+            if check_result in ("SUCCESS", "SUCCESS_TOO_EARLY"):
+                account_outcome["status"] = check_result
+                break
+            if check_result == "FAIL_CAPTCHA":
+                log("⚠️ 验证码未通过，刷新页面并重试...")
+                last_error = check_result
+                account_outcome["status"] = last_error
+                try:
+                    page.refresh()
+                except Exception:
+                    pass
+                time.sleep(3)
                 continue
-            last_error = result if result else "FAIL_OTHER"
+            last_error = check_result if check_result else "FAIL_OTHER"
+            account_outcome["status"] = last_error
 
-        log("❌ 最大重试次数已达")
-        return last_error or "FAIL_MAX_RETRY"
+        if account_outcome["status"] not in ("SUCCESS", "SUCCESS_TOO_EARLY"):
+            log("❌ 最大重试次数已达")
+            account_outcome["status"] = last_error or "FAIL_MAX_RETRY"
+        return account_outcome
 
     except Exception as e:
         log(f"❌ 异常: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-        return "FAIL_EXCEPTION"
+        account_outcome["status"] = "FAIL_EXCEPTION"
+        return account_outcome
     finally:
         if page:
+            tag = str(account_outcome.get("status") or "unknown").lower()
+            account_outcome["screenshot"] = capture_page_screenshot(page, account_index, tag)
             try:
                 page.quit()
             except Exception:
@@ -649,7 +765,7 @@ def job():
     result_lines = []
     has_failure = False
     for index, account in enumerate(accounts, start=1):
-        status = renew_single_account(
+        account_result = renew_single_account(
             account["email"],
             account["password"],
             account["url"],
@@ -657,14 +773,22 @@ def job():
             index,
             len(accounts)
         )
+        status = account_result.get("status", "FAIL_OTHER")
+        screenshot_path = account_result.get("screenshot")
         readable = RESULT_CODES.get(status, status)
-        if status in ("SUCCESS", "SUCCESS_TOO_EARLY"):
+        if status == "SUCCESS":
             status_text = f"✅ {readable}"
+        elif status == "SUCCESS_TOO_EARLY":
+            status_text = f"⏭️ {readable}"
         else:
             status_text = f"❌ {readable}"
             has_failure = True
         email_hint = account["email"][:3] + "***" if account["email"] else "unknown"
         result_lines.append(f"{index}. {email_hint}: {status_text}")
+        send_telegram_photo(
+            screenshot_path,
+            f"账号 {index}/{len(accounts)} {email_hint} -> {status_text}"
+        )
 
     summary = "\n".join(result_lines)
     send_telegram_message(
