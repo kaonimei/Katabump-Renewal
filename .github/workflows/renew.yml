@@ -27,17 +27,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
-      - name: Set up Cloudflare WARP
-        uses: sebst/actions-warp@v1
-        with:
-          tos: YES
-
-      - name: Check egress IP
-        run: |
-          echo "IPv4: $(curl -4 -s --max-time 15 https://ifconfig.me || true)"
-          echo "IPv6: $(curl -6 -s --max-time 15 https://ifconfig.me || true)"
-          curl -s --max-time 15 https://www.cloudflare.com/cdn-cgi/trace || true
-
       - name: Install Dependencies
         run: pip install DrissionPage requests
 
