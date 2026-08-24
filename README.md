@@ -52,7 +52,7 @@ SOCKS5：socks5://user:pass@server:port 或 socks://user:pass@server:port
 
 1. 打开仓库 `Settings -> Secrets and variables -> Actions`
 2. 添加上述环境变量为 Repository Secrets
-3. 在 `Actions` 页面手动运行工作流，或等待定时触发
+3. 在 `Actions` 页面手动运行工作流，或等待定时触发（默认每天北京时间 08:00 执行一次）
 
 默认工作流文件：`/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew.yml`
 
