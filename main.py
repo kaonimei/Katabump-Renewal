@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import socket
 import requests
 import zipfile
 import io
@@ -27,6 +28,24 @@ RESULT_CODES = {
 def log(message):
     current_time = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{current_time}] {message}", flush=True)
+
+def get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+def find_chrome_path():
+    candidates = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        os.environ.get("CHROME_BIN", ""),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
 
 def ensure_extensions_dir():
     os.makedirs("extensions", exist_ok=True)
@@ -293,8 +312,47 @@ def create_page(path_silk, path_cf, account_index):
     co.set_argument("--disable-dev-shm-usage")
     co.set_argument("--window-size=1920,1080")
     co.set_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    co.auto_port()
-    co.set_user_data_path(f"/tmp/kb_chrome_{account_index}_{int(time.time())}")
+
+    chrome_path = find_chrome_path()
+    if chrome_path:
+        co.set_browser_path(chrome_path)
+        log(f">>> Chrome 路径: {chrome_path}")
+    else:
+        log("⚠️ 未找到 Chrome 路径，使用默认")
+
+    port = get_free_port()
+    address = f"127.0.0.1:{port}"
+    log(f">>> 调试端口: {address}")
+
+    # 必须是 ip:port，否则 DrissionPage 4.1 会 split 失败
+    if hasattr(co, "set_local_port"):
+        try:
+            co.set_local_port(port)
+        except Exception:
+            pass
+    if hasattr(co, "set_address"):
+        co.set_address(address)
+    elif hasattr(co, "set_paths"):
+        try:
+            co.set_paths(address=address)
+        except Exception:
+            pass
+
+    addr_now = str(getattr(co, "address", "") or "")
+    if ":" not in addr_now:
+        log(f"⚠️ address 异常: {addr_now!r}，强制写入 {address}")
+        try:
+            co._address = address
+        except Exception:
+            pass
+        try:
+            co.set_argument(f"--remote-debugging-port={port}")
+        except Exception:
+            pass
+
+    user_dir = f"/tmp/kb_chrome_{account_index}_{int(time.time())}_{port}"
+    os.makedirs(user_dir, exist_ok=True)
+    co.set_user_data_path(user_dir)
 
     plugin_count = 0
     if path_silk:
@@ -304,6 +362,7 @@ def create_page(path_silk, path_cf, account_index):
         co.add_extension(path_cf)
         plugin_count += 1
     log(f">>> [浏览器] 已挂载插件数量: {plugin_count}")
+    log(f">>> ChromiumOptions.address = {getattr(co, 'address', None)!r}")
 
     page = ChromiumPage(co)
     page.set.timeouts(15)
