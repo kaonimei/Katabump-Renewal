@@ -176,10 +176,10 @@ jobs:
         ALL_PROXY: ${{ env.ALL_PROXY }}
         HTTP_PROXY: ${{ env.HTTP_PROXY }}
         HTTPS_PROXY: ${{ env.HTTPS_PROXY }}
-        all_proxy: ${{ env.all_proxy }}
-        http_proxy: ${{ env.http_proxy }}
-        https_proxy: ${{ env.https_proxy }}
       run: |
+        export all_proxy="${ALL_PROXY:-}"
+        export http_proxy="${HTTP_PROXY:-}"
+        export https_proxy="${HTTPS_PROXY:-}"
         if [ -z "${KATABUMP_ACCOUNTS}" ] && [ -n "${KATABUMP_EMAIL}" ] && [ -n "${KATABUMP_PASSWORD}" ]; then
           export KATABUMP_ACCOUNTS="${KATABUMP_EMAIL}:${KATABUMP_PASSWORD}"
         fi
