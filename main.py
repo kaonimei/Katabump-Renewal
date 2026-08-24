@@ -400,12 +400,13 @@ def _handle_altcha(sb) -> bool:
 
 def renew_account(sb, email: str, password: str) -> bool:
     print(f"\n{'=' * 60}\n🔁 开始处理账号: {email}\n{'=' * 60}")
-
-    if not login(sb, email, password):
-        send_tg_message(email, "❌", "续期失败", "登录失败")
-        return False
-
+    login_ok = False
     try:
+        if not login(sb, email, password):
+            send_tg_message(email, "❌", "续期失败", "登录失败")
+            return False
+        login_ok = True
+
         sb.open(BASE_URL + "/dashboard")
         time.sleep(3)
 
@@ -485,12 +486,16 @@ def renew_account(sb, email: str, password: str) -> bool:
 
     except Exception as e:
         print(f"❌ 续期过程异常: {e}")
-        sb.save_screenshot(f"renew_exception_{email.split('@')[0]}.png")
+        try:
+            sb.save_screenshot(f"renew_exception_{email.split('@')[0]}.png")
+        except Exception:
+            pass
         send_tg_message(email, "❌", "续期失败", str(e))
         return False
     finally:
-        logout(sb)
-        time.sleep(1)
+        if login_ok:
+            logout(sb)
+            time.sleep(1)
 
 
 def main() -> int:
@@ -504,8 +509,12 @@ def main() -> int:
 
     with SB(uc=True, test=False, locale_code="en") as sb:
         for email, password in accounts:
-            if renew_account(sb, email, password):
-                success_count += 1
+            try:
+                if renew_account(sb, email, password):
+                    success_count += 1
+            except Exception as e:
+                print(f"❌ 账号处理异常（已跳过）: {email} -> {e}")
+                send_tg_message(email, "❌", "续期失败", f"账号处理异常: {e}")
             time.sleep(2)
 
     failed_count = len(accounts) - success_count
