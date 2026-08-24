@@ -373,3 +373,145 @@ def _read_alert(sb):
     try:
         el = sb.find_element("div.alert", timeout=4)
         return (
+            (el.text or "").strip(),
+            (el.get_attribute("class") or "").lower(),
+        )
+    except Exception:
+        return "", ""
+
+
+def _handle_altcha(sb) -> bool:
+    """尝试处理续期弹窗中的 Altcha 验证。"""
+    for _ in range(10):
+        try:
+            if sb.execute_script(_ALTCHA_SOLVED_JS):
+                return True
+            pos = sb.execute_script(_ALTCHA_EXPAND_JS)
+            if isinstance(pos, dict) and "cx" in pos and "cy" in pos:
+                _xdotool_click(int(pos["cx"]), int(pos["cy"]))
+        except Exception:
+            pass
+        time.sleep(1)
+    try:
+        return bool(sb.execute_script(_ALTCHA_SOLVED_JS))
+    except Exception:
+        return False
+
+
+def renew_account(sb, email: str, password: str) -> bool:
+    print(f"\n{'=' * 60}\n🔁 开始处理账号: {email}\n{'=' * 60}")
+
+    if not login(sb, email, password):
+        send_tg_message(email, "❌", "续期失败", "登录失败")
+        return False
+
+    try:
+        sb.open(BASE_URL + "/dashboard")
+        time.sleep(3)
+
+        clicked = sb.execute_script(
+            """
+            (function() {
+                var keywords = ['renew', '续期'];
+                var nodes = document.querySelectorAll('button, a[role="button"], a.btn, input[type="submit"]');
+                for (var i = 0; i < nodes.length; i++) {
+                    var n = nodes[i];
+                    var txt = ((n.innerText || n.value || '') + '').toLowerCase().trim();
+                    if (!txt) continue;
+                    for (var j = 0; j < keywords.length; j++) {
+                        if (txt.indexOf(keywords[j]) !== -1 && !n.disabled) {
+                            n.click();
+                            return txt;
+                        }
+                    }
+                }
+                return '';
+            })()
+            """
+        )
+
+        if clicked:
+            print(f"✅ 已触发续期按钮: {clicked}")
+        else:
+            print("⚠️ 未找到明确的续期按钮，尝试读取页面提示...")
+
+        time.sleep(2)
+
+        if _handle_altcha(sb):
+            print("✅ Altcha 验证已通过")
+        else:
+            print("ℹ️ 未检测到 Altcha 或未能确认验证状态")
+
+        sb.execute_script(
+            """
+            (function() {
+                var keywords = ['confirm', 'submit', 'renew', '确认', '提交', '续期'];
+                var nodes = document.querySelectorAll('button, input[type="submit"]');
+                for (var i = 0; i < nodes.length; i++) {
+                    var n = nodes[i];
+                    var txt = ((n.innerText || n.value || '') + '').toLowerCase().trim();
+                    if (!txt || n.disabled) continue;
+                    for (var j = 0; j < keywords.length; j++) {
+                        if (txt.indexOf(keywords[j]) !== -1) {
+                            n.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            })()
+            """
+        )
+        time.sleep(3)
+
+        alert_text, alert_class = _read_alert(sb)
+        alert_text_l = alert_text.lower()
+        is_success = (
+            "success" in alert_class
+            or "成功" in alert_text
+            or "renewed" in alert_text_l
+            or "active" in alert_text_l
+        )
+        if is_success:
+            print(f"✅ 续期成功: {alert_text or '页面提示成功'}")
+            send_tg_message(email, "✅", "续期成功", alert_text)
+            return True
+
+        detail = alert_text or "未检测到明确成功提示，请查看日志和截图"
+        print(f"⚠️ 续期结果未确认: {detail}")
+        sb.save_screenshot(f"renew_result_unknown_{email.split('@')[0]}.png")
+        send_tg_message(email, "⚠️", "续期结果未确认", detail)
+        return False
+
+    except Exception as e:
+        print(f"❌ 续期过程异常: {e}")
+        sb.save_screenshot(f"renew_exception_{email.split('@')[0]}.png")
+        send_tg_message(email, "❌", "续期失败", str(e))
+        return False
+    finally:
+        logout(sb)
+        time.sleep(1)
+
+
+def main() -> int:
+    accounts = parse_accounts()
+    if not accounts:
+        print("❌ 未检测到有效账号。请设置 KATABUMP_ACCOUNTS（格式: email:password,...)")
+        return 1
+
+    print(f"📦 共读取到 {len(accounts)} 个账号，开始续期任务...")
+    success_count = 0
+
+    with SB(uc=True, test=False, locale_code="en") as sb:
+        for email, password in accounts:
+            if renew_account(sb, email, password):
+                success_count += 1
+            time.sleep(2)
+
+    failed_count = len(accounts) - success_count
+    print(f"\n🏁 全部完成：成功 {success_count} / 失败 {failed_count}")
+    return 0 if failed_count == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

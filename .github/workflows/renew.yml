@@ -32,7 +32,12 @@ jobs:
       env:
         NODE_LINK: ${{ secrets.NODE_LINK }}
       run: |
-        bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+        if [ -z "${NODE_LINK}" ]; then
+          echo "未配置 NODE_LINK，跳过代理设置。"
+          exit 0
+        fi
+        bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh) || \
+          echo "代理初始化失败，继续直连执行。"
 
     - name: 🚀 运行续期脚本
       env:
