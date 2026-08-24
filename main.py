@@ -100,8 +100,48 @@ def do_login(page, email, password):
         log("❌ 未找到登录表单")
         return False
 
+    # 先填写账号密码
+    log(">>> 填写登录信息...")
     email_input.input(email)
     page.ele('css:input[name="password"]').input(password)
+    
+    # 等待 CF Turnstile 加载
+    log(">>> 等待 Turnstile 验证码加载...")
+    time.sleep(5)
+    
+    # 检查是否有 Turnstile iframe
+    turnstile_found = False
+    iframe = page.ele('css:iframe[src*="turnstile"], iframe[src*="cloudflare"]', timeout=5)
+    if iframe:
+        turnstile_found = True
+        log(">>> 检测到 Turnstile，等待插件处理 (60s)...")
+        time.sleep(60)  # 给插件 1 分钟处理时间
+    else:
+        log("⚠️ 未检测到 Turnstile iframe")
+        # 即使没检测到也等一下，可能在 shadow DOM 里
+        log(">>> 保险起见，仍等待 60s...")
+        time.sleep(60)
+    
+    # 补刀：手动点击 Turnstile checkbox（如果插件没点）
+    log(">>> [补刀] 检查是否需要手动点击...")
+    try:
+        iframes = page.eles('tag:iframe')
+        log(f"  找到 {len(iframes)} 个 iframe")
+        for idx, iframe in enumerate(iframes):
+            try:
+                checkbox = iframe.ele('css:input[type="checkbox"]', timeout=1)
+                if checkbox:
+                    log(f"  iframe[{idx}] 找到 checkbox，尝试点击...")
+                    checkbox.click(by_js=True)
+                    time.sleep(3)
+                    break
+            except Exception:
+                continue
+    except Exception as e:
+        log(f"⚠️ 补刀失败: {e}")
+    
+    # 提交登录
+    log(">>> 提交登录表单...")
     page.ele('css:button#submit').click()
     log(">>> 等待登录后跳转...")
 
@@ -313,7 +353,7 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
             log(f"\n🚀 [Step 2] 尝试续期 (第 {attempt}/{max_retries} 次)...")
             log(f">>> 目标 URL: {target_url}")
             page.get(target_url)
-            time.sleep(3)
+            time.sleep(5)
             log(f"  页面标题: {page.title} | URL: {page.url}")
 
             # 检查是否被踢回登录页
@@ -324,7 +364,7 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
                     last_error = "FAIL_LOGIN_FAILED"
                     continue
                 page.get(target_url)
-                time.sleep(3)
+                time.sleep(5)
                 log(f"  重新登录后 URL: {page.url}")
                 if 'login' in page.url.lower():
                     log("❌ 重新登录后仍被踢回")
@@ -333,24 +373,18 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
 
             pass_full_page_shield(page)
 
-            # 等待续期按钮出现（最多 120 秒）
-            log(">>> 等待续期按钮出现...")
-            try:
-                page.wait.ele_displayed('css:button[data-bs-target="#renew-modal"]', timeout=120)
-                log("✅ 续期按钮已出现")
-            except Exception:
-                log("⚠️ 等待按钮超时，检查页面状态...")
+            # 找续期按钮
+            log(">>> 查找续期按钮...")
+            renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]', timeout=10)
+            if not renew_btn or not renew_btn.states.is_displayed:
+                log("❌ 未找到续期按钮，检查页面状态...")
                 result = analyze_page_alert(page)
                 if result == "SUCCESS_TOO_EARLY":
                     return result
                 last_error = "FAIL_NO_RENEW_BUTTON"
                 continue
 
-            renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]')
-            if not renew_btn:
-                log("❌ 未找到续期按钮")
-                last_error = "FAIL_NO_RENEW_BUTTON"
-                continue
+            log("✅ 找到续期按钮")
 
             # 点击按钮，打开弹窗
             log(">>> 点击 Renew 按钮（打开弹窗）...")
