@@ -5,10 +5,7 @@ import requests
 import json
 import re
 import datetime
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from DrissionPage import ChromiumPage, ChromiumOptions
 
 # ==================== 状态码 ====================
 RESULT_CODES = {
@@ -32,264 +29,186 @@ def log(message):
 
 # ==================== 核心逻辑 ====================
 
-def wait_for_no_challenge(driver, timeout=60):
-    """等待 CF 全屏盾消失"""
+def wait_for_no_challenge(page, timeout=60):
     log(f">>> 等待 CF 全屏盾 (最多 {timeout}s)...")
-    end_time = time.time() + timeout
-    while time.time() < end_time:
-        try:
-            title = driver.title.lower()
-            if "just a moment" not in title and "checking" not in title:
-                return True
-        except Exception:
-            pass
-        time.sleep(2)
-    log("⚠️ 全屏盾超时，继续执行...")
+    for _ in range(timeout):
+        title = page.title.lower()
+        if "just a moment" not in title and "checking" not in title:
+            return True
+        time.sleep(1)
     return False
 
-def do_login(driver, email, password):
-    """执行登录并验证"""
+def do_login(page, email, password):
     log(">>> 打开登录页...")
-    driver.get('https://dashboard.katabump.com/auth/login')
-    time.sleep(3)
-    wait_for_no_challenge(driver, timeout=30)
+    page.get('https://dashboard.katabump.com/auth/login')
+    wait_for_no_challenge(page, timeout=30)
 
-    try:
-        log(">>> 填写登录信息...")
-        email_input = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="email"]'))
-        )
-        email_input.send_keys(email)
-        driver.find_element(By.CSS_SELECTOR, 'input[name="password"]').send_keys(password)
-
-        log(">>> 等待 Turnstile 自动验证 (60s)...")
-        time.sleep(60)
-
-        log(">>> 提交登录...")
-        driver.find_element(By.CSS_SELECTOR, 'button#submit').click()
-
-        time.sleep(10)
-        current_url = driver.current_url
-        log(f"  登录后 URL: {current_url}")
-
-        if 'error=captcha' in current_url:
-            log("❌ Turnstile 验证未通过")
-            return False
-
-        log(">>> 访问 dashboard 验证...")
-        driver.get('https://dashboard.katabump.com/dashboard')
-        time.sleep(5)
-        wait_for_no_challenge(driver, timeout=30)
-
-        if 'dashboard' in driver.current_url.lower() and 'login' not in driver.current_url.lower():
-            log("✅ 登录成功")
-            return True
-
-        log(f"❌ 登录失败，当前 URL: {driver.current_url}")
+    email_input = page.ele('css:input[name="email"]')
+    if not email_input:
+        log("❌ 未找到登录表单")
         return False
 
-    except Exception as e:
-        log(f"❌ 登录异常: {e}")
-        import traceback
-        traceback.print_exc()
+    email_input.input(email)
+    page.ele('css:input[name="password"]').input(password)
+
+    log(">>> 等待 Turnstile 自动验证...")
+    time.sleep(60)  # 给插件足够时间处理
+
+    log(">>> 提交登录...")
+    page.ele('css:button#submit').click()
+    time.sleep(10)
+
+    current_url = page.url
+    log(f"  登录后 URL: {current_url}")
+
+    if 'error=captcha' in current_url:
+        log("❌ Turnstile 验证未通过")
         return False
 
-def click_altcha(driver):
-    """点击并等待 Altcha 验证"""
+    log(">>> 访问 dashboard 验证...")
+    page.get('https://dashboard.katabump.com/dashboard')
+    time.sleep(5)
+    wait_for_no_challenge(page, timeout=30)
+
+    if 'dashboard' in page.url.lower() and 'login' not in page.url.lower():
+        log("✅ 登录成功")
+        return True
+
+    log(f"❌ 登录失败，当前 URL: {page.url}")
+    return False
+
+def click_altcha(page):
     log(">>> 处理 Altcha 验证...")
     try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, 'altcha-widget'))
-        )
+        page.wait.ele_displayed('tag:altcha-widget', timeout=10)
         time.sleep(2)
 
         log(">>> 点击 Altcha...")
-        success = driver.execute_script("""
-            try {
-                const widget = document.querySelector('#renew-modal altcha-widget');
-                if (!widget) return false;
-                widget.click();
-                return true;
-            } catch (e) {
-                return false;
-            }
-        """)
+        page.ele('tag:altcha-widget').click(by_js=True)
 
-        if success:
-            log("✅ Altcha 已点击")
-        else:
-            log("⚠️ Altcha 点击失败，尝试直接查找 input...")
-
-        log(">>> 等待 Altcha PoW 完成 (最多 30s)...")
-        for i in range(30):
-            val = driver.execute_script("""
-                try {
-                    const w = document.querySelector('#renew-modal altcha-widget');
-                    if (!w) return '';
-                    const inp = w.querySelector('input[name="altcha"]');
-                    if (inp && inp.value) return inp.value;
-                    if (w.shadowRoot) {
-                        const sinp = w.shadowRoot.querySelector('input[name="altcha"]');
-                        if (sinp && sinp.value) return sinp.value;
-                    }
-                    return '';
-                } catch (e) {
-                    return '';
+        log(">>> 等待 Altcha 完成...")
+        for _ in range(30):
+            val = page.run_js("""
+                const w = document.querySelector('#renew-modal altcha-widget');
+                if (!w) return '';
+                const inp = w.querySelector('input[name="altcha"]');
+                if (inp && inp.value) return inp.value;
+                if (w.shadowRoot) {
+                    const sinp = w.shadowRoot.querySelector('input[name="altcha"]');
+                    if (sinp && sinp.value) return sinp.value;
                 }
+                return '';
             """)
             if val:
-                log(f"✅ Altcha 验证完成 (等待了 {i}s)")
+                log(f"✅ Altcha 完成 (等待 {_}s)")
                 return True
             time.sleep(1)
-
-        log("⚠️ Altcha 超时，尝试继续提交...")
         return False
-
     except Exception as e:
         log(f"⚠️ Altcha 处理失败: {e}")
         return False
 
-def analyze_result(driver):
-    """分析续期结果"""
+def analyze_result(page):
     log(">>> 检查结果...")
-    try:
-        dangers = driver.find_elements(By.CSS_SELECTOR, '.alert.alert-danger')
-        for alert in dangers:
-            if alert.is_displayed():
-                text = alert.text
-                log(f"⬇️ 红色提示: {text}")
-                if "can't renew" in text.lower() or "cannot renew" in text.lower():
-                    match = re.search(r'\(in (\d+) day', text)
-                    days = match.group(1) if match else "?"
-                    log(f"✅ 未到期 (等待 {days} 天)")
-                    return "SUCCESS_TOO_EARLY"
-                return "FAIL_OTHER"
+    danger = page.ele('css:.alert.alert-danger')
+    if danger and danger.states.is_displayed:
+        text = danger.text
+        log(f"⬇️ 红色提示: {text}")
+        if "can't renew" in text.lower() or "cannot renew" in text.lower():
+            match = re.search(r'\(in (\d+) day', text)
+            days = match.group(1) if match else "?"
+            log(f"✅ 未到期 (等待 {days} 天)")
+            return "SUCCESS_TOO_EARLY"
+        return "FAIL_OTHER"
 
-        successes = driver.find_elements(By.CSS_SELECTOR, '.alert.alert-success')
-        for alert in successes:
-            if alert.is_displayed():
-                log(f"⬇️ 绿色提示: {alert.text}")
-                log("🎉 续期成功！")
-                return "SUCCESS"
+    success = page.ele('css:.alert.alert-success')
+    if success and success.states.is_displayed:
+        log(f"⬇️ 绿色提示: {success.text}")
+        log("🎉 续期成功！")
+        return "SUCCESS"
 
-        return "UNKNOWN"
-    except Exception as e:
-        log(f"⚠️ 结果检查异常: {e}")
-        return "UNKNOWN"
-
-# ==================== 主续期逻辑 ====================
+    return "UNKNOWN"
 
 def renew_single_account(email, password, target_url, account_index, total_accounts):
-    driver = None
+    page = None
     last_error = None
 
     try:
         log(f"================ 账号 {account_index}/{total_accounts} 开始 ================")
 
-        options = uc.ChromeOptions()
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--disable-blink-features=AutomationControlled')
+        co = ChromiumOptions()
+        co.set_argument('--no-sandbox')
+        co.set_argument('--disable-gpu')
+        co.set_argument('--disable-dev-shm-usage')
+        co.set_argument('--window-size=1920,1080')
+        co.set_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
 
-        chromedriver_path = os.path.expanduser('~/chromedriver/chromedriver')
-        log(f">>> 启动浏览器... ChromeDriver: {chromedriver_path}")
-        driver = uc.Chrome(
-            options=options,
-            driver_executable_path=chromedriver_path,
-            use_subprocess=True
-        )
-        driver.set_page_load_timeout(60)
+        # 挂载插件（Silk + CF-AutoClick）
+        plugin_count = 0
+        if os.path.exists("extensions/silk_ext"):
+            co.add_extension("extensions/silk_ext")
+            plugin_count += 1
+        if os.path.exists("extensions/cf_autoclick_root"):
+            co.add_extension("extensions/cf_autoclick_root")
+            plugin_count += 1
+        log(f">>> 已挂载插件数量: {plugin_count}")
 
+        page = ChromiumPage(co)
+        page.set.timeouts(30)
+
+        # Step 1: 登录
         log(">>> [Step 1] 登录...")
-        if not do_login(driver, email, password):
+        if not do_login(page, email, password):
             return "FAIL_LOGIN_FAILED"
 
+        # Step 2: 续期
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             log(f"\n🚀 [Step 2] 尝试续期 (第 {attempt}/{max_retries} 次)...")
-            log(f">>> 访问续期页: {target_url}")
-            driver.get(target_url)
+            page.get(target_url)
             time.sleep(5)
-            wait_for_no_challenge(driver, timeout=30)
+            wait_for_no_challenge(page, timeout=30)
 
-            current_url = driver.current_url
-            log(f" 当前 URL: {current_url}")
-
-            if 'login' in current_url.lower():
-                log("⚠️ 被踢回登录页，重新登录...")
-                if not do_login(driver, email, password):
-                    last_error = "FAIL_LOGIN_FAILED"
-                    continue
-                driver.get(target_url)
-                time.sleep(5)
-                current_url = driver.current_url
-                if 'login' in current_url.lower():
-                    log("❌ 重新登录后仍被踢回")
-                    last_error = "FAIL_LOGIN_FAILED"
-                    continue
-
-            log(">>> 查找续期按钮...")
-            try:
-                renew_btn = WebDriverWait(driver, 20).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-bs-target="#renew-modal"]'))
-                )
-                log("✅ 找到续期按钮")
-            except Exception:
-                log("❌ 未找到续期按钮，检查页面状态...")
-                result = analyze_result(driver)
-                if result == "SUCCESS_TOO_EARLY":
-                    return result
+            renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]')
+            if not renew_btn or not renew_btn.states.is_displayed:
+                log("❌ 未找到续期按钮")
                 last_error = "FAIL_NO_RENEW_BUTTON"
                 continue
 
             log(">>> 点击 Renew 按钮...")
-            driver.execute_script("arguments[0].click();", renew_btn)
+            renew_btn.click(by_js=True)
             time.sleep(3)
 
-            try:
-                WebDriverWait(driver, 10).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, '#renew-modal'))
-                )
-                log("✅ 弹窗已打开")
-            except Exception:
+            modal = page.ele('css:#renew-modal', timeout=10)
+            if not modal:
                 log("❌ 弹窗未出现")
                 last_error = "FAIL_MODAL_NOT_OPEN"
                 continue
 
-            click_altcha(driver)
+            click_altcha(page)
             time.sleep(3)
 
-            log(">>> 点击弹窗内 Renew 按钮...")
-            try:
-                submit_btn = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, '#renew-modal button[type="submit"].btn-primary'))
-                )
-                driver.execute_script("arguments[0].click();", submit_btn)
-                log(">>> 等待响应 (8s)...")
-                time.sleep(8)
-            except Exception as e:
-                log(f"❌ 提交失败: {e}")
+            confirm_btn = modal.ele('css:button[type="submit"].btn-primary', timeout=5)
+            if not confirm_btn:
                 last_error = "FAIL_NO_SUBMIT_BUTTON"
                 continue
 
-            result = analyze_result(driver)
-            log(f">>> 本次结果: {result} ({RESULT_CODES.get(result, result)})")
+            log(">>> 点击弹窗内 Renew 按钮...")
+            confirm_btn.click(by_js=True)
+            time.sleep(8)
+
+            result = analyze_result(page)
+            log(f">>> 本次结果: {result}")
 
             if result in ("SUCCESS", "SUCCESS_TOO_EARLY"):
                 return result
-
             if result == "FAIL_CAPTCHA":
-                log("⚠️ 验证码未通过，重试...")
                 last_error = result
                 time.sleep(3)
                 continue
-
             last_error = result if result else "FAIL_OTHER"
             time.sleep(3)
 
-        log("❌ 最大重试次数已达")
         return last_error or "FAIL_MAX_RETRY"
 
     except Exception as e:
@@ -298,9 +217,9 @@ def renew_single_account(email, password, target_url, account_index, total_accou
         traceback.print_exc()
         return "FAIL_EXCEPTION"
     finally:
-        if driver:
+        if page:
             try:
-                driver.quit()
+                page.quit()
             except Exception:
                 pass
 
@@ -311,29 +230,23 @@ def load_accounts():
     if not accounts_json:
         log("❌ 未配置 KB_ACCOUNTS_JSON")
         return None
-
     try:
         data = json.loads(accounts_json)
         if not isinstance(data, list):
             log("❌ KB_ACCOUNTS_JSON 必须是数组")
             return None
-
         accounts = []
         for index, item in enumerate(data, start=1):
             if not isinstance(item, dict):
                 log(f"❌ 第 {index} 个账号配置格式错误")
                 return None
-
             email = str(item.get("email", "")).strip()
             password = str(item.get("password", "")).strip()
             url = str(item.get("url", "")).strip()
-
             if not all([email, password, url]):
                 log(f"❌ 第 {index} 个账号缺少字段")
                 return None
-
             accounts.append({"email": email, "password": password, "url": url})
-
         return accounts
     except json.JSONDecodeError as e:
         log(f"❌ JSON 解析失败: {e}")
@@ -344,7 +257,6 @@ def send_telegram_message(text):
     chat_id = os.environ.get("TG_CHAT_ID", "").strip()
     if not token or not chat_id:
         return False
-
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -354,8 +266,6 @@ def send_telegram_message(text):
         return resp.status_code == 200
     except Exception:
         return False
-
-# ==================== 主入口 ====================
 
 def job():
     accounts = load_accounts()
