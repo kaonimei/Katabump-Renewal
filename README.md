@@ -51,7 +51,7 @@ SOCKS5：socks5://user:pass@server:port 或 socks://user:pass@server:port
 - 工作流会自动清理 `NODE_LINK` 中的换行和首尾空白，降低 Secrets 格式问题导致的失败概率
 - 支持粘贴单个节点、多个节点混合文本，或订阅内容（Base64/明文），会自动提取第一个可用代理链接
 - 对 `vmess://` 节点会自动做 Base64 标准化，并优先使用兼容版 sing-box
-- 代理初始化会自动尝试备用脚本源，全部失败后会自动降级为直连继续执行
+- 代理初始化会自动尝试备用脚本源，若已配置 `NODE_LINK` 且全部失败将直接终止工作流（不再降级直连）
 ## GitHub Actions 配置
 
 1. 打开仓库 `Settings -> Secrets and variables -> Actions`

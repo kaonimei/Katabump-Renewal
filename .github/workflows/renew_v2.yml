@@ -28,7 +28,6 @@ jobs:
         seleniumbase install chromedriver
 
     - name: ⚙ 设置代理 (sing-box)
-      continue-on-error: true
       env:
         NODE_LINK: ${{ secrets.NODE_LINK }}
       run: |
@@ -94,6 +93,7 @@ jobs:
         export NODE_LINK
 
         protocol="${NODE_LINK%%://*}"
+        protocol="$(echo "${protocol}" | tr '[:upper:]' '[:lower:]')"
         if [ "${protocol}" = "${NODE_LINK}" ]; then
           protocol="unknown"
         fi
@@ -105,6 +105,7 @@ jobs:
             NODE_LINK="${sub_candidate}"
             export NODE_LINK
             protocol="${NODE_LINK%%://*}"
+            protocol="$(echo "${protocol}" | tr '[:upper:]' '[:lower:]')"
             echo "检测到订阅内容，已提取首个节点协议: ${protocol}"
           fi
         fi
@@ -161,7 +162,8 @@ jobs:
         fi
 
         if [ "${setup_ok}" -ne 1 ]; then
-          echo "代理初始化失败，继续直连执行。"
+          echo "代理初始化失败，已停止执行（已配置 NODE_LINK，不再降级直连）。"
+          exit 1
         else
           echo "代理初始化完成。"
         fi
