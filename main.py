@@ -1,802 +1,375 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-import sys
 import time
-import socket
-import random
-import base64
+import subprocess
 import requests
-import zipfile
-import io
-import datetime
-import re
-import json
-from DrissionPage import ChromiumPage, ChromiumOptions
+from seleniumbase import SB
 
-RESULT_CODES = {
-    "SUCCESS": "续期成功",
-    "SUCCESS_TOO_EARLY": "未到续期时间",
-    "FAIL_LOGIN_NO_FORM": "登录页无表单",
-    "FAIL_LOGIN_FAILED": "登录失败",
-    "FAIL_NO_RENEW_BUTTON": "找不到续期按钮",
-    "FAIL_MODAL_NOT_OPEN": "弹窗未打开",
-    "FAIL_ALTCHA_TIMEOUT": "Altcha验证超时",
-    "FAIL_NO_SUBMIT_BUTTON": "弹窗内无提交按钮",
-    "FAIL_CAPTCHA": "验证码未通过",
-    "FAIL_OTHER": "其他错误",
-    "FAIL_MAX_RETRY": "达到最大重试次数",
-    "FAIL_EXCEPTION": "程序异常"
-}
+# 多账号支持：逗号分隔的 email:password 对
+# 格式: "email1:password1,email2:password2,email3:password3"
+ACCOUNTS_RAW = os.environ.get("KATABUMP_ACCOUNTS") or ""
+TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""
 
-def log(message):
-    current_time = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"[{current_time}] {message}", flush=True)
+BASE_URL = "https://dashboard.katabump.com"
 
-def get_free_port():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# ── 解析账号 ────────────────────────────────────────────────────────────────────
 
-def find_chrome_path():
-    candidates = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
-        os.environ.get("CHROME_BIN", ""),
-    ]
-    for path in candidates:
-        if path and os.path.exists(path):
-            return path
-    return None
+def parse_accounts():
+    """解析逗号分隔的 email:password 对，返回元组列表"""
+    if not ACCOUNTS_RAW:
+        return []
+    accounts = []
+    for pair in ACCOUNTS_RAW.split(','):
+        pair = pair.strip()
+        if ':' in pair:
+            email, password = pair.split(':', 1)
+            email = email.strip()
+            password = password.strip()
+            if email and password:
+                accounts.append((email, password))
+    return accounts
 
-def ensure_extensions_dir():
-    os.makedirs("extensions", exist_ok=True)
+# ── Telegram 通知 ────────────────────────────────────────────────────────────────
 
-def download_and_extract_zip(url, extract_dir, plugin_name):
-    try:
-        ensure_extensions_dir()
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, stream=True, timeout=30)
-        if resp.status_code != 200:
-            log(f"❌ [{plugin_name}] 下载失败: HTTP {resp.status_code}")
-            return False
-        with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-            zf.extractall(extract_dir)
-        return True
-    except Exception as e:
-        log(f"❌ [{plugin_name}] 异常: {e}")
-        return False
+def send_tg_message(email: str, status_icon: str, status_text: str, detail: str = ""):
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
+        return
 
-def download_silk():
-    extract_dir = "extensions/silk_ext"
-    if os.path.exists(extract_dir):
-        return os.path.abspath(extract_dir)
-    log(">>> [插件1] 正在下载 Silk Privacy Pass...")
-    url = "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=122.0&acceptformat=crx2,crx3&x=id%3Dajhmfdgkijocedmfjonnpjfojldioehi%26uc"
-    if download_and_extract_zip(url, extract_dir, "插件1"):
-        return os.path.abspath(extract_dir)
-    return None
+    local_time = time.gmtime(time.time() + 8 * 3600)
+    current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
 
-def pass_full_page_shield(page):
-    for _ in range(6):
-        title = (page.title or "").lower()
-        if "just a moment" in title or "checking your browser" in title or "please wait" in title:
-            log("--- [门神] 全屏盾检测中，等待 5s...")
-            time.sleep(5)
+    if '@' in email:
+        name, domain = email.split('@', 1)
+        if len(name) > 4:
+            masked_email = f"{name[:2]}****{name[-2:]}@{domain}"
         else:
-            return True
-    log("--- [门神] 全屏盾可能未通过，继续执行...")
-    return False
+            masked_email = f"{name}@{domain}"
+    else:
+        masked_email = email[:2] + '****'
 
-def wait_turnstile_ready(page, timeout=90):
-    saw_iframe = False
-    for second in range(timeout):
+    text = (
+        f"🇫🇷 katabump 续期通知\n\n"
+        f"{status_icon} {status_text}\n"
+        f"👤 续期账户: {masked_email}\n"
+        f"⏱️ 续期时间: {current_time_str}"
+    )
+    if detail:
+        text += f"\n📝 详情: {detail}"
+
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TG_CHAT_ID, "text": text}
+
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            print("📩 Telegram 通知发送成功！")
+        else:
+            print(f"⚠️ Telegram 通知发送失败: {r.text}")
+    except Exception as e:
+        print(f"⚠️ Telegram 通知发送异常: {e}")
+
+# ── 页面注入脚本 ────────────────────────────────────────────────────────────────
+
+_EXPAND_JS = """
+(function() {
+    var ts = document.querySelector('input[name="cf-turnstile-response"]');
+    if (!ts) return 'no-turnstile';
+    var el = ts;
+    for (var i = 0; i < 20; i++) {
+        el = el.parentElement;
+        if (!el) break;
+        var s = window.getComputedStyle(el);
+        if (s.overflow === 'hidden' || s.overflowX === 'hidden' || s.overflowY === 'hidden')
+            el.style.overflow = 'visible';
+        el.style.minWidth = 'max-content';
+    }
+    document.querySelectorAll('iframe').forEach(function(f){
+        if (f.src && f.src.includes('challenges.cloudflare.com')) {
+            f.style.width = '300px'; f.style.height = '65px';
+            f.style.minWidth = '300px';
+            f.style.visibility = 'visible'; f.style.opacity = '1';
+        }
+    });
+    return 'done';
+})()
+"""
+
+_EXISTS_JS = """
+(function(){
+    return document.querySelector('input[name="cf-turnstile-response"]') !== null;
+})()
+"""
+
+_SOLVED_JS = """
+(function(){
+    var i = document.querySelector('input[name="cf-turnstile-response"]');
+    return !!(i && i.value && i.value.length > 20);
+})()
+"""
+
+_WININFO_JS = """
+(function(){
+    return {
+        sx: window.screenX || 0,
+        sy: window.screenY || 0,
+        oh: window.outerHeight,
+        ih: window.innerHeight
+    };
+})()
+"""
+
+_ALTCHA_EXPAND_JS = """
+(function() {
+    var modal = document.querySelector('div.modal.show') || document;
+    var iframes = modal.querySelectorAll('iframe');
+    for (var i = 0; i < iframes.length; i++) {
+        var r = iframes[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+            iframes[i].style.width  = '300px';
+            iframes[i].style.height = '150px';
+            iframes[i].style.minWidth  = '300px';
+            iframes[i].style.minHeight = '150px';
+            iframes[i].style.visibility = 'visible';
+            iframes[i].style.opacity = '1';
+            var el = iframes[i];
+            for (var j = 0; j < 10; j++) {
+                el = el.parentElement;
+                if (!el) break;
+                el.style.overflow = 'visible';
+            }
+            var r2 = iframes[i].getBoundingClientRect();
+            return { cx: Math.round(r2.x + 30), cy: Math.round(r2.y + r2.height / 2) };
+        }
+    }
+    return null;
+})()
+"""
+
+_ALTCHA_SOLVED_JS = """
+(function(){
+    var modal = document.querySelector('div.modal.show') || document;
+    var inputs = modal.querySelectorAll('input[type="hidden"]');
+    for (var i = 0; i < inputs.length; i++) {
+        var n = (inputs[i].name || '').toLowerCase();
+        if ((n.includes('altcha') || n.includes('captcha')) &&
+            inputs[i].value && inputs[i].value.length > 20) return true;
+    }
+    var cbs = modal.querySelectorAll('input[type="checkbox"]');
+    for (var j = 0; j < cbs.length; j++) {
+        if (cbs[j].disabled) return true;
+    }
+    var w = modal.querySelector('[data-state="verified"],.altcha--verified,.altcha-verified');
+    if (w) return true;
+    return false;
+})()
+"""
+
+# ── 底层输入工具 ────────────────────────────────────────────────────────────────
+
+def js_fill_input(sb, selector: str, text: str):
+    safe_text = text.replace('\\', '\\\\').replace('"', '\\"')
+    sb.execute_script(f"""
+    (function(){{
+        var el = document.querySelector('{selector}');
+        if (!el) return;
+        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+        if (nativeInputValueSetter) {{
+            nativeInputValueSetter.call(el, "{safe_text}");
+        }} else {{
+            el.value = "{safe_text}";
+        }}
+        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    }})()
+    """)
+
+def _activate_window():
+    for cls in ["chrome", "chromium", "Chromium", "Chrome", "google-chrome"]:
         try:
-            state = page.run_js("""
-                const iframes = Array.from(document.querySelectorAll('iframe'));
-                const hasIframe = iframes.some(f => {
-                    const src = (f.getAttribute('src') || '').toLowerCase();
-                    return src.includes('turnstile') || src.includes('cloudflare');
-                });
-                const tokenInput = document.querySelector('input[name="cf-turnstile-response"]');
-                const token = tokenInput ? (tokenInput.value || '') : '';
-                return { hasIframe, hasToken: !!token };
-            """)
-            if isinstance(state, dict):
-                has_iframe = bool(state.get("hasIframe"))
-                has_token = bool(state.get("hasToken"))
-            else:
-                has_iframe = False
-                has_token = False
-            if has_iframe:
-                saw_iframe = True
-            if has_token:
-                log(f"✅ [Turnstile] 检测到 token，等待 {second}s 后继续")
-                return True
-            if saw_iframe and not has_iframe:
-                log(f"✅ [Turnstile] 验证 iframe 已消失，等待 {second}s 后继续")
-                return True
+            r = subprocess.run(["xdotool", "search", "--onlyvisible", "--class", cls],
+                               capture_output=True, text=True, timeout=3)
+            wids = [w for w in r.stdout.strip().split("\n") if w.strip()]
+            if wids:
+                subprocess.run(["xdotool", "windowactivate", "--sync", wids[0]],
+                               timeout=3, stderr=subprocess.DEVNULL)
+                time.sleep(0.2)
+                return
         except Exception:
             pass
-        if second > 0 and second % 10 == 0:
-            log(f">>> [Turnstile] 等待中... {second}/{timeout}s")
-        time.sleep(1)
-    if saw_iframe:
-        log("⚠️ [Turnstile] 超时，准备补刀后继续")
-        return False
-    log(">>> [Turnstile] 未检测到挑战组件，继续执行")
-    return True
-
-def nudge_turnstile(page):
-    log(">>> [补刀] 尝试点击 Turnstile...")
-    if click_turnstile_by_cdp(page):
-        return
     try:
-        iframes = page.eles("tag:iframe")
-        log(f"  找到 {len(iframes)} 个 iframe")
-        for idx, fr in enumerate(iframes):
-            try:
-                checkbox = fr.ele('css:input[type="checkbox"]', timeout=1)
-                if checkbox:
-                    log(f"  iframe[{idx}] 点击 checkbox")
-                    checkbox.click(by_js=True)
-                    time.sleep(3)
-                    return
-                body = fr.ele("tag:body", timeout=1)
-                if body:
-                    log(f"  iframe[{idx}] 点击 body")
-                    body.click(by_js=True)
-                    time.sleep(3)
-                    return
-            except Exception:
-                continue
-    except Exception as e:
-        log(f"⚠️ 补刀失败: {e}")
-
-def get_turnstile_click_point(page):
-    try:
-        point = page.run_js("""
-            const frame = document.querySelector('iframe[src*="turnstile"], iframe[src*="cloudflare"]');
-            if (!frame) return null;
-            const rect = frame.getBoundingClientRect();
-            if (!rect || rect.width < 20 || rect.height < 20) return null;
-            const x = Math.round(rect.left + Math.min(45, rect.width / 2));
-            const y = Math.round(rect.top + rect.height / 2);
-            return { x, y };
-        """)
-        if isinstance(point, dict) and "x" in point and "y" in point:
-            return int(point["x"]), int(point["y"])
+        subprocess.run(["xdotool", "getactivewindow", "windowactivate"],
+                       timeout=3, stderr=subprocess.DEVNULL)
     except Exception:
         pass
-    return None
 
-def click_turnstile_by_cdp(page):
-    point = get_turnstile_click_point(page)
-    if not point:
-        return False
-    x, y = point
-    x += random.randint(-3, 3)
-    y += random.randint(-3, 3)
+def _xdotool_click(x: int, y: int):
+    _activate_window()
     try:
-        page.run_cdp("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": "none"})
-        page.run_cdp("Input.dispatchMouseEvent", {"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1})
-        page.run_cdp("Input.dispatchMouseEvent", {"type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1})
-        log(f"✅ [CDP] 已执行 Turnstile 鼠标点击: ({x}, {y})")
-        time.sleep(2)
-        return True
-    except Exception as e:
-        log(f"⚠️ [CDP] 点击失败: {e}")
-        return False
-
-def extract_turnstile_sitekey(page):
-    try:
-        sitekey = page.run_js("""
-            const frames = Array.from(document.querySelectorAll('iframe[src*="turnstile"], iframe[src*="cloudflare"]'));
-            for (const frame of frames) {
-                const src = frame.getAttribute('src') || '';
-                if (!src) continue;
-                try {
-                    const u = new URL(src, location.href);
-                    const sk = u.searchParams.get('sitekey') || u.searchParams.get('k');
-                    if (sk) return sk;
-                } catch (e) {}
-                const m = src.match(/[?&](?:sitekey|k)=([^&]+)/i);
-                if (m && m[1]) return decodeURIComponent(m[1]);
-            }
-            const widget = document.querySelector('.cf-turnstile,[data-sitekey]');
-            if (widget) {
-                const sk = widget.getAttribute('data-sitekey');
-                if (sk) return sk;
-            }
-            return '';
-        """)
-        return str(sitekey or "").strip()
+        subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y)],
+                       timeout=3, stderr=subprocess.DEVNULL)
+        time.sleep(0.15)
+        subprocess.run(["xdotool", "click", "1"], timeout=2, stderr=subprocess.DEVNULL)
     except Exception:
-        return ""
+        os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
 
-def inject_turnstile_token(page, token):
-    if not token:
-        return False
-    try:
-        count = page.run_js("""
-            const token = arguments[0];
-            let filled = 0;
-            const selectors = [
-                'input[name="cf-turnstile-response"]',
-                'textarea[name="cf-turnstile-response"]'
-            ];
-            for (const selector of selectors) {
-                const nodes = document.querySelectorAll(selector);
-                for (const node of nodes) {
-                    node.value = token;
-                    node.dispatchEvent(new Event('input', { bubbles: true }));
-                    node.dispatchEvent(new Event('change', { bubbles: true }));
-                    filled += 1;
-                }
-            }
-            const widgets = document.querySelectorAll('.cf-turnstile,[data-sitekey]');
-            for (const w of widgets) {
-                const cb = w.getAttribute('data-callback');
-                if (cb && typeof window[cb] === 'function') {
-                    try { window[cb](token); } catch (e) {}
-                }
-            }
-            return filled;
-        """, token)
-        return bool(count)
-    except Exception:
-        return False
+# ── Turnstile 验证 ──────────────────────────────────────────────────────────────
 
-def solve_turnstile_by_capsolver(page, page_url, timeout=120):
-    api_key = os.environ.get("CAPSOLVER_API_KEY", "").strip()
-    if not api_key:
-        return False
-    sitekey = extract_turnstile_sitekey(page)
-    if not sitekey:
-        log("⚠️ [CapSolver] 未获取到 Turnstile sitekey，跳过")
-        return False
-
-    try:
-        create_resp = requests.post(
-            "https://api.capsolver.com/createTask",
-            json={
-                "clientKey": api_key,
-                "task": {
-                    "type": "AntiTurnstileTaskProxyLess",
-                    "websiteURL": page_url,
-                    "websiteKey": sitekey
-                }
-            },
-            timeout=20
-        )
-        data = create_resp.json()
-    except Exception as e:
-        log(f"⚠️ [CapSolver] createTask 失败: {e}")
-        return False
-
-    task_id = data.get("taskId")
-    if not task_id:
-        log(f"⚠️ [CapSolver] createTask 返回异常: {data}")
-        return False
-
-    log(">>> [CapSolver] 任务已创建，等待返回 token...")
-    waited = 0
-    while waited < timeout:
-        time.sleep(3)
-        waited += 3
-        try:
-            poll_resp = requests.post(
-                "https://api.capsolver.com/getTaskResult",
-                json={"clientKey": api_key, "taskId": task_id},
-                timeout=20
-            )
-            poll_data = poll_resp.json()
-        except Exception as e:
-            log(f"⚠️ [CapSolver] 轮询异常: {e}")
-            continue
-
-        status = str(poll_data.get("status", "")).lower()
-        if status == "ready":
-            token = str((poll_data.get("solution") or {}).get("token", "")).strip()
-            if token and inject_turnstile_token(page, token):
-                log(f"✅ [CapSolver] token 已注入 (耗时 {waited}s)")
-                return True
-            log("⚠️ [CapSolver] token 注入失败")
-            return False
-        if status == "failed" or poll_data.get("errorId"):
-            log(f"⚠️ [CapSolver] 解题失败: {poll_data}")
-            return False
-    log("⚠️ [CapSolver] 解题超时")
-    return False
-
-def do_login(page, email, password):
-    log(">>> 打开登录页...")
-    page.get("https://dashboard.katabump.com/auth/login")
+def handle_turnstile(sb) -> bool:
+    print("🔍 处理 Cloudflare Turnstile 验证...")
     time.sleep(2)
-    pass_full_page_shield(page)
 
-    email_input = page.ele('css:input[name="email"]', timeout=10)
-    if not email_input:
-        log("❌ 未找到登录表单")
-        return False
-
-    log(">>> 填写登录信息...")
-    email_input.clear()
-    email_input.input(email)
-    page.ele('css:input[name="password"]').clear()
-    page.ele('css:input[name="password"]').input(password)
-
-    log(">>> 等待 Turnstile 加载...")
-    time.sleep(3)
-    iframe = page.ele('css:iframe[src*="turnstile"], iframe[src*="cloudflare"]', timeout=5)
-    if iframe:
-        log(">>> 检测到 Turnstile，等待验证结果...")
-        click_turnstile_by_cdp(page)
-    else:
-        log("⚠️ 未检测到 Turnstile iframe，继续轮询是否自动放行")
-
-    solved = False
-    if iframe:
-        solved = solve_turnstile_by_capsolver(page, page.url or "https://dashboard.katabump.com/auth/login")
-    if solved:
-        wait_turnstile_ready(page, timeout=30)
-    elif not wait_turnstile_ready(page, timeout=90):
-        nudge_turnstile(page)
-        wait_turnstile_ready(page, timeout=30)
-
-    log(">>> 提交登录...")
-    page.ele("css:button#submit").click()
-    time.sleep(10)
-    log(f"  提交后 URL: {page.url}")
-
-    if "error=captcha" in (page.url or "").lower():
-        log("❌ Turnstile 验证未通过")
-        return False
-
-    log(">>> 访问 dashboard 验证 session...")
-    page.get("https://dashboard.katabump.com/dashboard")
-    time.sleep(3)
-    pass_full_page_shield(page)
-    log(f"  Dashboard URL: {page.url}")
-
-    if "dashboard" in page.url.lower() and "login" not in page.url.lower():
-        log("✅ 登录成功，Session 有效")
+    if sb.execute_script(_SOLVED_JS):
+        print("✅ 已静默通过")
         return True
 
-    log("❌ 登录失败，仍被重定向到登录页")
-    return False
-
-def click_and_wait_altcha(page, timeout=30):
-    log(">>> [Altcha] 尝试点击复选框...")
-    clicked = False
-    try:
-        clicked = page.run_js("""
-            const w = document.querySelector('#renew-modal altcha-widget');
-            if (!w) return false;
-            const cb = w.querySelector('input[type="checkbox"]');
-            if (cb) { cb.click(); return true; }
-            if (w.shadowRoot) {
-                const scb = w.shadowRoot.querySelector('input[type="checkbox"]');
-                if (scb) { scb.click(); return true; }
-                const btn = w.shadowRoot.querySelector('button, label, .altcha-checkbox');
-                if (btn) { btn.click(); return true; }
-            }
-            w.click();
-            return true;
-        """)
-    except Exception as e:
-        log(f"⚠️ JS 点击失败: {e}")
-
-    if clicked:
-        log("✅ [Altcha] 已点击，等待 PoW...")
-    else:
+    for _ in range(3):
         try:
-            modal_ele = page.ele("css:#renew-modal")
-            altcha = modal_ele.ele("tag:altcha-widget", timeout=3)
-            if altcha:
-                altcha.click(by_js=True)
-                log("✅ [Altcha] 点击了 altcha-widget")
-        except Exception as e:
-            log(f"⚠️ 备用点击失败: {e}")
-
-    for i in range(timeout):
-        try:
-            val = page.run_js("""
-                const w = document.querySelector('#renew-modal altcha-widget');
-                if (!w) return '';
-                const inp = w.querySelector('input[name="altcha"]');
-                if (inp && inp.value) return inp.value;
-                if (w.shadowRoot) {
-                    const sinp = w.shadowRoot.querySelector('input[name="altcha"]');
-                    if (sinp && sinp.value) return sinp.value;
-                }
-                return '';
-            """)
-            if val:
-                log(f"✅ [Altcha] PoW 完成 (等待了 {i}s)")
-                return True
+            sb.execute_script(_EXPAND_JS)
         except Exception:
             pass
+        time.sleep(0.5)
+
+    for attempt in range(6):
+        if sb.execute_script(_SOLVED_JS):
+            print(f"✅ Turnstile 通过（第 {attempt} 次尝试）")
+            return True
+
+        print(f"🖱️ 第 {attempt + 1} 次调用 uc_gui_click_captcha...")
+        try:
+            sb.uc_gui_click_captcha()
+        except Exception as e:
+            print(f"⚠️ uc_gui_click_captcha 调用异常: {e}")
+
+        for _ in range(16):
+            time.sleep(0.5)
+            if sb.execute_script(_SOLVED_JS):
+                print(f"✅ Turnstile 通过（第 {attempt + 1} 次尝试）")
+                return True
+
+        print(f"⚠️ 第 {attempt + 1} 次未通过，重试...")
+
+    print("❌ Turnstile 6 次均失败")
+    return False
+
+# ── 登录 ────────────────────────────────────────────────────────────────────────
+
+def login(sb, email: str, password: str) -> bool:
+    print(f"\n🌐 打开登录页面: {BASE_URL}/auth/login")
+    sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
+    time.sleep(6)
+
+    print("⏳ 等待 Cloudflare 验证通过...")
+    cf_passed = False
+    for i in range(30):
+        page_src = sb.get_page_source() or ""
+        if 'input[name="email"]' in page_src.lower() or 'name="email"' in page_src.lower():
+            cf_passed = True
+            print(f"✅ Cloudflare 验证已通过（{i+1}s）")
+            break
+        time.sleep(1)
+    if not cf_passed:
+        print("⚠️ Cloudflare 验证可能未通过，继续尝试...")
+
+    try:
+        sb.wait_for_element('input[name="email"]', timeout=15)
+    except Exception:
+        try:
+            sb.wait_for_element('input[name="Email"]', timeout=5)
+        except Exception:
+            print("❌ 页面未加载出登录表单")
+            print(f"  当前 URL: {sb.get_current_url()}")
+            print(f"  当前标题: {sb.get_title() or ''}")
+            sb.save_screenshot(f"login_load_fail_{email.split('@')[0]}.png")
+            return False
+
+    print("🍪 关闭可能的 Cookie 弹窗...")
+    try:
+        for btn in sb.find_elements("button"):
+            if "Accept" in (btn.text or ""):
+                btn.click()
+                time.sleep(0.5)
+                break
+    except Exception:
+        pass
+
+    print(f"📧 填写邮箱: {email}")
+    js_fill_input(sb, 'input[name="email"]', email)
+    time.sleep(0.3)
+
+    print("🔑 填写密码...")
+    js_fill_input(sb, 'input[name="password"]', password)
+    time.sleep(1)
+
+    print("⏳ 等待 Turnstile 验证框出现...")
+    ts_found = False
+    for i in range(10):
+        if sb.execute_script(_EXISTS_JS):
+            ts_found = True
+            print(f"✅ 检测到 Turnstile（{i+1}s）")
+            break
         time.sleep(1)
 
-    log("⚠️ [Altcha] 超时，尝试直接提交...")
+    if ts_found:
+        if not handle_turnstile(sb):
+            print("❌ 登录界面的 Turnstile 验证失败")
+            sb.save_screenshot(f"login_turnstile_fail_{email.split('@')[0]}.png")
+            return False
+    else:
+        print("ℹ️ 未检测到 Turnstile")
+
+    print("🖱️ 敲击回车提交表单...")
+    sb.press_keys('input[name="password"]', '\n')
+
+    print("⏳ 等待登录跳转...")
+    for _ in range(12):
+        time.sleep(1)
+        cur_url = sb.get_current_url().split('?')[0].lower()
+        page_title = sb.get_title() or ""
+        if cur_url.startswith(f"{BASE_URL}/dashboard") or "Dashboard | KataBump" in page_title.lower():
+            break
+
+    cur_url = sb.get_current_url().split('?')[0].lower()
+    page_title = sb.get_title() or ""
+    if cur_url.startswith(f"{BASE_URL}/dashboard") or "Dashboard | KataBump" in page_title.lower():
+        print(f"✅ 登录成功！(URL: {sb.get_current_url()}, Title: {page_title})")
+        return True
+
+    print(f"❌ 登录失败，页面未跳转。(URL: {sb.get_current_url()}, Title: {page_title})")
+    sb.save_screenshot(f"login_failed_{email.split('@')[0]}.png")
     return False
 
-def analyze_page_alert(page):
-    log(">>> [系统] 检查结果...")
-    danger = page.ele("css:.alert.alert-danger")
-    if danger and danger.states.is_displayed:
-        text = danger.text
-        log(f"⬇️ 红色提示: {text}")
-        if "can't renew" in text.lower() or "cannot renew" in text.lower():
-            match = re.search(r"\(in (\d+) day", text)
-            days = match.group(1) if match else "?"
-            log(f"✅ [结果] 未到期 (等待 {days} 天)")
-            return "SUCCESS_TOO_EARLY"
-        if "captcha" in text.lower() or "altcha" in text.lower():
-            return "FAIL_CAPTCHA"
-        return "FAIL_OTHER"
+# ── 退出登录 ────────────────────────────────────────────────────────────────────
 
-    success = page.ele("css:.alert.alert-success")
-    if success and success.states.is_displayed:
-        log(f"⬇️ 绿色提示: {success.text}")
-        log("🎉 [结果] 续期成功！")
-        return "SUCCESS"
-    return "UNKNOWN"
-
-def load_accounts():
-    accounts_json = os.environ.get("KB_ACCOUNTS_JSON", "").strip()
-    if accounts_json:
-        try:
-            data = json.loads(accounts_json)
-            if not isinstance(data, list):
-                log("❌ KB_ACCOUNTS_JSON 必须是数组")
-                return None
-            accounts = []
-            for index, item in enumerate(data, start=1):
-                if not isinstance(item, dict):
-                    log(f"❌ 第 {index} 个账号配置不是对象")
-                    return None
-                email = str(item.get("email", "")).strip()
-                password = str(item.get("password", "")).strip()
-                target_url = str(item.get("url", "")).strip()
-                if not email or not password or not target_url:
-                    log(f"❌ 第 {index} 个账号缺少 email/password/url")
-                    return None
-                accounts.append({"email": email, "password": password, "url": target_url})
-            return accounts
-        except json.JSONDecodeError as e:
-            log(f"❌ KB_ACCOUNTS_JSON 不是合法 JSON: {e}")
-            return None
-
-    email = os.environ.get("KB_EMAIL")
-    password = os.environ.get("KB_PASSWORD")
-    target_url = os.environ.get("KB_RENEW_URL")
-    missing_env = [name for name, value in {
-        "KB_EMAIL": email, "KB_PASSWORD": password, "KB_RENEW_URL": target_url
-    }.items() if not value]
-    if missing_env:
-        log(f"❌ 配置缺失: {', '.join(missing_env)}")
-        return None
-    return [{"email": email, "password": password, "url": target_url}]
-
-def get_proxy_server():
-    proxy = (
-        os.environ.get("KB_PROXY_URL", "").strip()
-        or os.environ.get("KB_HYSTERIA2_PROXY", "").strip()
-        or os.environ.get("KB_SOCKS5_PROXY", "").strip()
-        or os.environ.get("KB_HTTP_PROXY", "").strip()
-        or os.environ.get("KB_HTTPS_PROXY", "").strip()
-    )
-    if not proxy:
-        return None
-    if "://" not in proxy:
-        proxy = f"http://{proxy}"
-    return proxy
-
-def send_telegram_message(text):
-    tg_token = os.environ.get("TG_BOT_TOKEN", "").strip()
-    tg_chat_id = os.environ.get("TG_CHAT_ID", "").strip()
-    if not tg_token or not tg_chat_id:
-        return False
+def logout(sb):
+    """退出当前账号"""
+    print("\n🚪 退出登录...")
     try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{tg_token}/sendMessage",
-            json={"chat_id": tg_chat_id, "text": text},
-            timeout=15
-        )
-        if resp.status_code != 200:
-            log(f"⚠️ TG 发送失败: HTTP {resp.status_code}")
-            return False
-        return True
-    except requests.RequestException as e:
-        log(f"⚠️ TG 网络异常: {e}")
-        return False
-
-def send_telegram_photo(photo_path, caption):
-    tg_token = os.environ.get("TG_BOT_TOKEN", "").strip()
-    tg_chat_id = os.environ.get("TG_CHAT_ID", "").strip()
-    if not tg_token or not tg_chat_id or not photo_path or not os.path.exists(photo_path):
-        return False
-    try:
-        with open(photo_path, "rb") as f:
-            resp = requests.post(
-                f"https://api.telegram.org/bot{tg_token}/sendPhoto",
-                data={"chat_id": tg_chat_id, "caption": caption[:1024]},
-                files={"photo": f},
-                timeout=30
-            )
-        if resp.status_code != 200:
-            log(f"⚠️ TG 图片发送失败: HTTP {resp.status_code}")
-            return False
-        return True
-    except requests.RequestException as e:
-        log(f"⚠️ TG 图片发送网络异常: {e}")
-        return False
-
-def capture_page_screenshot(page, account_index, tag):
-    if not page:
-        return None
-    try:
-        os.makedirs("/tmp/kb_snaps", exist_ok=True)
-        ts = int(time.time())
-        path = f"/tmp/kb_snaps/account_{account_index}_{tag}_{ts}.png"
-        data = page.run_cdp("Page.captureScreenshot", {"format": "png", "fromSurface": True})
-        if isinstance(data, dict) and data.get("data"):
-            with open(path, "wb") as f:
-                f.write(base64.b64decode(data["data"]))
-            return path
-    except Exception as e:
-        log(f"⚠️ 截图失败: {e}")
-    return None
-
-def create_page(path_silk, account_index):
-    co = ChromiumOptions()
-    co.set_argument("--headless=new")
-    co.set_argument("--no-sandbox")
-    co.set_argument("--disable-gpu")
-    co.set_argument("--disable-dev-shm-usage")
-    co.set_argument("--window-size=1920,1080")
-    co.set_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
-    proxy_server = get_proxy_server()
-    if proxy_server:
-        co.set_argument(f"--proxy-server={proxy_server}")
-        log(f">>> [代理] 已启用: {proxy_server}")
-
-    chrome_path = find_chrome_path()
-    if chrome_path:
-        co.set_browser_path(chrome_path)
-        log(f">>> Chrome 路径: {chrome_path}")
-    else:
-        log("⚠️ 未找到 Chrome 路径，使用默认")
-
-    port = get_free_port()
-    address = f"127.0.0.1:{port}"
-    log(f">>> 调试端口: {address}")
-
-    # 必须是 ip:port，否则 DrissionPage 4.1 会 split 失败
-    if hasattr(co, "set_local_port"):
-        try:
-            co.set_local_port(port)
-        except Exception:
-            pass
-    if hasattr(co, "set_address"):
-        co.set_address(address)
-    elif hasattr(co, "set_paths"):
-        try:
-            co.set_paths(address=address)
-        except Exception:
-            pass
-
-    addr_now = str(getattr(co, "address", "") or "")
-    if ":" not in addr_now:
-        log(f"⚠️ address 异常: {addr_now!r}，强制写入 {address}")
-        try:
-            co._address = address
-        except Exception:
-            pass
-        try:
-            co.set_argument(f"--remote-debugging-port={port}")
-        except Exception:
-            pass
-
-    user_dir = f"/tmp/kb_chrome_{account_index}_{int(time.time())}_{port}"
-    os.makedirs(user_dir, exist_ok=True)
-    co.set_user_data_path(user_dir)
-
-    plugin_count = 0
-    if path_silk:
-        co.add_extension(path_silk)
-        plugin_count += 1
-    log(f">>> [浏览器] 已挂载插件数量: {plugin_count}")
-    log(f">>> ChromiumOptions.address = {getattr(co, 'address', None)!r}")
-
-    page = ChromiumPage(co)
-    page.set.timeouts(15)
-    return page
-
-def renew_single_account(email, password, target_url, path_silk, account_index, total_accounts):
-    page = None
-    last_error = "FAIL_OTHER"
-    account_outcome = {"status": "FAIL_EXCEPTION", "screenshot": None}
-    try:
-        log(f"================ 账号 {account_index}/{total_accounts} 开始 ================")
-        page = create_page(path_silk, account_index)
-
-        log(">>> [Step 1] 登录...")
-        if not do_login(page, email, password):
-            account_outcome["status"] = "FAIL_LOGIN_FAILED"
-            return account_outcome
-
-        max_retries = 20
-        for attempt in range(1, max_retries + 1):
-            log(f"\n🚀 [Step 2] 尝试续期 (第 {attempt}/{max_retries} 次)...")
-            log(f">>> 目标 URL: {target_url}")
-            page.get(target_url)
-            time.sleep(5)
-            log(f"  页面标题: {page.title} | URL: {page.url}")
-
-            if "login" in page.url.lower():
-                log("⚠️ 被重定向到登录页，重新登录...")
-                if not do_login(page, email, password):
-                    last_error = "FAIL_LOGIN_FAILED"
-                    account_outcome["status"] = last_error
-                    continue
-                page.get(target_url)
-                time.sleep(5)
-                log(f"  重新登录后 URL: {page.url}")
-                if "login" in page.url.lower():
-                    log("❌ 重新登录后仍被踢回")
-                    last_error = "FAIL_LOGIN_FAILED"
-                    account_outcome["status"] = last_error
-                    continue
-
-            pass_full_page_shield(page)
-
-            log(">>> 查找续期按钮...")
-            renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]', timeout=15)
-            if not renew_btn or not renew_btn.states.is_displayed:
-                log("❌ 未找到续期按钮，检查页面状态...")
-                check_result = analyze_page_alert(page)
-                if check_result == "SUCCESS_TOO_EARLY":
-                    account_outcome["status"] = check_result
-                    break
-                last_error = "FAIL_NO_RENEW_BUTTON"
-                account_outcome["status"] = last_error
-                continue
-
-            log("✅ 找到续期按钮")
-            log(">>> 点击 Renew 按钮（打开弹窗）...")
-            renew_btn.click(by_js=True)
-            time.sleep(2)
-
-            modal = None
-            for _ in range(10):
-                candidate = page.ele("css:#renew-modal", timeout=1)
-                if candidate:
-                    try:
-                        display = candidate.style("display")
-                        if display and display != "none":
-                            modal = candidate
-                            break
-                    except Exception:
-                        modal = candidate
-                        break
-                time.sleep(0.5)
-
-            if not modal:
-                log("❌ 弹窗未出现")
-                last_error = "FAIL_MODAL_NOT_OPEN"
-                account_outcome["status"] = last_error
-                continue
-
-            log("✅ 弹窗已打开")
-            time.sleep(1)
-            if not click_and_wait_altcha(page, timeout=30):
-                log("⚠️ Altcha 未确认完成，仍尝试提交...")
-                last_error = "FAIL_ALTCHA_TIMEOUT"
-                account_outcome["status"] = last_error
-
-            confirm_btn = modal.ele("css:button[type='submit'].btn-primary", timeout=5)
-            if not confirm_btn:
-                confirm_btn = modal.ele("css:form button[type='submit']", timeout=3)
-            if not confirm_btn:
-                log("❌ 弹窗内未找到提交按钮")
-                last_error = "FAIL_NO_SUBMIT_BUTTON"
-                account_outcome["status"] = last_error
-                continue
-
-            log(">>> 点击弹窗内 Renew 提交按钮...")
-            confirm_btn.click(by_js=True)
-            log(">>> 等待响应 (8s)...")
-            time.sleep(8)
-
-            check_result = analyze_page_alert(page)
-            log(f">>> 本次结果: {check_result} ({RESULT_CODES.get(check_result, check_result)})")
-
-            if check_result in ("SUCCESS", "SUCCESS_TOO_EARLY"):
-                account_outcome["status"] = check_result
-                break
-            if check_result == "FAIL_CAPTCHA":
-                log("⚠️ 验证码未通过，刷新页面并重试...")
-                last_error = check_result
-                account_outcome["status"] = last_error
-                try:
-                    page.refresh()
-                except Exception:
-                    pass
-                time.sleep(3)
-                continue
-            last_error = check_result if check_result else "FAIL_OTHER"
-            account_outcome["status"] = last_error
-
-        if account_outcome["status"] not in ("SUCCESS", "SUCCESS_TOO_EARLY"):
-            log("❌ 最大重试次数已达")
-            account_outcome["status"] = last_error or "FAIL_MAX_RETRY"
-        return account_outcome
-
-    except Exception as e:
-        log(f"❌ 异常: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        account_outcome["status"] = "FAIL_EXCEPTION"
-        return account_outcome
-    finally:
-        if page:
-            tag = str(account_outcome.get("status") or "unknown").lower()
-            account_outcome["screenshot"] = capture_page_screenshot(page, account_index, tag)
+        for selector in ['a[href*="/auth/logout"]', 'a[href*="/logout"]']:
             try:
-                page.quit()
+                sb.find_element(selector, timeout=3).click()
+                time.sleep(2)
+                print("✅ 已退出登录")
+                return
             except Exception:
-                pass
+                continue
+        sb.open(BASE_URL + "/auth/logout")
+        time.sleep(2)
+        print("✅ 已通过直接 URL 退出登录")
+    except Exception as e:
+        print(f"⚠️ 退出登录失败: {e}")
+        try:
+            sb.delete_all_cookies()
+            print("🍪 已清除 Cookie 作为备用方案")
+        except Exception:
+            pass
 
-def job():
-    accounts = load_accounts()
-    if not accounts:
-        return 1
+# ── 续期流程 ────────────────────────────────────────────────────────────────────
 
-    path_silk = download_silk()
-
-    trigger_source = os.environ.get("RUN_TRIGGER_SOURCE", "unknown")
-    send_telegram_message(
-        f"🚀 Katabump 续期任务开始\n触发方式: {trigger_source}\n账号数量: {len(accounts)}"
-    )
-
-    result_lines = []
-    has_failure = False
-    for index, account in enumerate(accounts, start=1):
-        account_result = renew_single_account(
-            account["email"],
-            account["password"],
-            account["url"],
-            path_silk,
-            index,
-            len(accounts)
-        )
-        status = account_result.get("status", "FAIL_OTHER")
-        screenshot_path = account_result.get("screenshot")
-        readable = RESULT_CODES.get(status, status)
-        if status == "SUCCESS":
-            status_text = f"✅ {readable}"
-        elif status == "SUCCESS_TOO_EARLY":
-            status_text = f"⏭️ {readable}"
-        else:
-            status_text = f"❌ {readable}"
-            has_failure = True
-        email_hint = account["email"][:3] + "***" if account["email"] else "unknown"
-        result_lines.append(f"{index}. {email_hint}: {status_text}")
-        send_telegram_photo(
-            screenshot_path,
-            f"账号 {index}/{len(accounts)} {email_hint} -> {status_text}"
-        )
-
-    summary = "\n".join(result_lines)
-    send_telegram_message(
-        f"📣 Katabump 续期任务结束\n触发方式: {trigger_source}\n\n{summary}"
-    )
-    log("===== 任务汇总 =====")
-    log(summary)
-    return 1 if has_failure else 0
-
-if __name__ == "__main__":
-    sys.exit(job())
+def _read_alert(sb):
+    try:
+        el = sb.find_element("div.alert", timeout=4)
+        return (
