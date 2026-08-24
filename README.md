@@ -7,7 +7,7 @@
 当前仓库核心文件：
 
 - `/home/runner/work/Katabump-Renewal/Katabump-Renewal/main.py`：自动化脚本（登录、验证码处理、退出、Telegram 通知等逻辑）
-- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew.yml`：GitHub Actions 定时任务
+- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew_v2.yml`：GitHub Actions 定时任务
 
 ## 功能特性
 
@@ -58,7 +58,7 @@ SOCKS5：socks5://user:pass@server:port 或 socks://user:pass@server:port
 2. 添加上述环境变量为 Repository Secrets
 3. 在 `Actions` 页面手动运行工作流，或等待定时触发（默认每天北京时间 08:00 执行一次）
 
-默认工作流文件：`/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew.yml`
+默认工作流文件：`/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew_v2.yml`
 
 ## 本地运行（可选）
 
