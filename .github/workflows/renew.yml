@@ -37,6 +37,60 @@ jobs:
           exit 0
         fi
         NODE_LINK="$(echo "${NODE_LINK}" | tr -d '\r' | xargs)"
+
+        extract_first_proxy() {
+          python - <<'PY'
+import base64
+import re
+import sys
+import urllib.parse
+
+text = sys.stdin.read().strip()
+if not text:
+    sys.exit(0)
+
+schemes = ("vless", "vmess", "trojan", "tuic", "hysteria2", "hy2", "ss", "ssr", "socks5", "socks", "http", "https")
+pattern = re.compile(r'(?i)\b(?:' + "|".join(schemes) + r')://[^\s,]+')
+
+def find_proxy(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+
+    match = pattern.search(value)
+    if match:
+        return match.group(0)
+
+    for token in re.split(r'[\n,\s]+', value):
+        token = urllib.parse.unquote(token.strip())
+        if pattern.match(token):
+            return token
+    return ""
+
+found = find_proxy(text)
+if found:
+    print(found)
+    sys.exit(0)
+
+compact = re.sub(r'\s+', '', text)
+for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+    try:
+        padding = "=" * ((4 - (len(compact) % 4)) % 4)
+        decoded = decoder((compact + padding).encode("utf-8")).decode("utf-8", errors="ignore")
+    except Exception:
+        continue
+    found = find_proxy(decoded)
+    if found:
+        print(found)
+        break
+PY
+        }
+
+        extracted_link="$(printf '%s' "${NODE_LINK}" | extract_first_proxy)"
+        if [ -n "${extracted_link}" ]; then
+          NODE_LINK="${extracted_link}"
+        fi
+
         export NODE_LINK
 
         protocol="${NODE_LINK%%://*}"
@@ -44,6 +98,16 @@ jobs:
           protocol="unknown"
         fi
         echo "检测到代理协议: ${protocol}"
+
+        if [ "${protocol}" = "http" ] || [ "${protocol}" = "https" ]; then
+          sub_candidate="$(curl -fsSL --connect-timeout 15 --max-time 20 "${NODE_LINK}" 2>/dev/null | tr -d '\r' | extract_first_proxy || true)"
+          if [ -n "${sub_candidate}" ]; then
+            NODE_LINK="${sub_candidate}"
+            export NODE_LINK
+            protocol="${NODE_LINK%%://*}"
+            echo "检测到订阅内容，已提取首个节点协议: ${protocol}"
+          fi
+        fi
 
         if [ "${protocol}" = "vmess" ]; then
           vmess_payload="${NODE_LINK#vmess://}"

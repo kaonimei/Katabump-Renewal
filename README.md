@@ -49,6 +49,7 @@ SOCKS5：socks5://user:pass@server:port 或 socks://user:pass@server:port
 注意事项
 尽量添加一个干净的节点，以免过不了cf盾
 - 工作流会自动清理 `NODE_LINK` 中的换行和首尾空白，降低 Secrets 格式问题导致的失败概率
+- 支持粘贴单个节点、多个节点混合文本，或订阅内容（Base64/明文），会自动提取第一个可用代理链接
 - 对 `vmess://` 节点会自动做 Base64 标准化，并优先使用兼容版 sing-box
 - 代理初始化会自动尝试备用脚本源，全部失败后会自动降级为直连继续执行
 ## GitHub Actions 配置
