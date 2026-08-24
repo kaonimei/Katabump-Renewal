@@ -2,7 +2,7 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-  - cron: '0 2 */3 * *'  # 每天 UTC 0点 (北京时间 8点) 运行,根据服务到期时间自行修改
+  - cron: '0 0 * * *'  # 每天执行一次（UTC 00:00 / 北京时间 08:00）
   workflow_dispatch: # 允许手动触发
 
 jobs:
@@ -18,12 +18,14 @@ jobs:
       uses: actions/setup-python@v6
       with:
         python-version: '3.12'
+        cache: 'pip'
 
     - name: 🛠️ 安装系统依赖和python依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
-        pip install seleniumbase requests
+        python -m pip install --upgrade pip
+        pip install --disable-pip-version-check seleniumbase requests
         seleniumbase install chromedriver
 
     - name: ⚙ 设置代理 (sing-box)
@@ -35,13 +37,17 @@ jobs:
 
     - name: 🚀 运行续期脚本
       env:
+        KATABUMP_ACCOUNTS: ${{ secrets.KATABUMP_ACCOUNTS }}
         KATABUMP_EMAIL: ${{ secrets.KATABUMP_EMAIL }}
         KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: |
+        if [ -z "${KATABUMP_ACCOUNTS}" ] && [ -n "${KATABUMP_EMAIL}" ] && [ -n "${KATABUMP_PASSWORD}" ]; then
+          export KATABUMP_ACCOUNTS="${KATABUMP_EMAIL}:${KATABUMP_PASSWORD}"
+        fi
         xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
-          python3 app.py
+          python3 main.py
         
     - name: 🧹 清理旧的工作流运行记录
       if: always()
