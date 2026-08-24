@@ -9,6 +9,23 @@ import re
 import json
 from DrissionPage import ChromiumPage, ChromiumOptions
 
+# ==================== 状态码 ====================
+RESULT_CODES = {
+    "SUCCESS": "续期成功",
+    "SUCCESS_TOO_EARLY": "未到续期时间",
+    "FAIL_LOGIN_NO_FORM": "登录页无表单",
+    "FAIL_LOGIN_STILL_ON_PAGE": "登录失败仍在登录页",
+    "FAIL_NO_RENEW_BUTTON": "找不到续期按钮",
+    "FAIL_MODAL_NOT_OPEN": "弹窗未打开",
+    "FAIL_ALTCHA_TIMEOUT": "Altcha验证超时",
+    "FAIL_NO_SUBMIT_BUTTON": "弹窗内无提交按钮",
+    "FAIL_CAPTCHA": "验证码未通过",
+    "FAIL_OTHER": "其他错误",
+    "FAIL_MAX_RETRY": "达到最大重试次数",
+    "FAIL_EXCEPTION": "程序异常"
+}
+
+# ==================== 基础工具 ====================
 def log(message):
     current_time = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{current_time}] {message}", flush=True)
@@ -61,59 +78,79 @@ def download_cf_autoclick():
 # ==================== 核心逻辑 ====================
 
 def pass_full_page_shield(page):
-    """处理全屏盾"""
+    """处理全屏盾 — 只在真正是 CF 盾时等待"""
     for _ in range(6):
         title = page.title.lower()
-        if "just a moment" not in title and "checking" not in title:
+        if "just a moment" in title or "checking your browser" in title or "please wait" in title:
+            log("--- [门神] 全屏盾检测中，等待 5s...")
+            time.sleep(5)
+        else:
             return True
-        log("--- [门神] 全屏盾检测中，等待 5s...")
-        time.sleep(5)
     log("--- [门神] 全屏盾可能未通过，继续执行...")
     return False
 
-def wait_for_altcha(modal, timeout=20):
-    """
-    等待 Altcha 自动完成验证。
-    Altcha 是工作量证明，通常会自动完成，无需用户操作。
-    完成后 altcha-widget 会在内部设置一个隐藏 input 的 value。
-    """
-    log(">>> [Altcha] 等待自动验证 (最多 {}s)...".format(timeout))
-    end_time = time.time() + timeout
-    while time.time() < end_time:
+def click_and_wait_altcha(page, timeout=30):
+    """点击 Altcha 复选框，然后等待 PoW 自动完成"""
+    log(">>> [Altcha] 尝试点击复选框...")
+
+    clicked = False
+    try:
+        clicked = page.run_js("""
+            const w = document.querySelector('#renew-modal altcha-widget');
+            if (!w) return false;
+            const cb = w.querySelector('input[type="checkbox"]');
+            if (cb) { cb.click(); return true; }
+            if (w.shadowRoot) {
+                const scb = w.shadowRoot.querySelector('input[type="checkbox"]');
+                if (scb) { scb.click(); return true; }
+                const btn = w.shadowRoot.querySelector('button, label, .altcha-checkbox');
+                if (btn) { btn.click(); return true; }
+            }
+            return false;
+        """)
+    except Exception as e:
+        log(f"⚠️ JS 点击失败: {e}")
+
+    if clicked:
+        log("✅ [Altcha] 复选框已点击，等待 PoW 完成...")
+    else:
+        log("⚠️ [Altcha] JS 点击未成功，尝试 DrissionPage 直接点击...")
         try:
-            # 检查 altcha-widget 是否已有 value（验证完成的信号）
-            result = page_run_js(modal, """
-                const widget = document.querySelector('altcha-widget');
-                if (!widget) return 'no_widget';
-                const input = widget.querySelector('input[name="altcha"]') || 
-                              widget.shadowRoot?.querySelector('input[name="altcha"]');
-                if (!input) return 'no_input';
-                return input.value ? 'done' : 'pending';
+            modal_ele = page.ele('css:#renew-modal')
+            altcha = modal_ele.ele('tag:altcha-widget', timeout=3)
+            if altcha:
+                altcha.click(by_js=True)
+                log("✅ [Altcha] 点击了 altcha-widget 元素")
+                clicked = True
+        except Exception as e:
+            log(f"⚠️ 备用点击也失败: {e}")
+
+    log(f">>> [Altcha] 等待验证完成 (最多 {timeout}s)...")
+    for i in range(timeout):
+        try:
+            val = page.run_js("""
+                const w = document.querySelector('#renew-modal altcha-widget');
+                if (!w) return '';
+                const inp = w.querySelector('input[name="altcha"]');
+                if (inp && inp.value) return inp.value;
+                if (w.shadowRoot) {
+                    const sinp = w.shadowRoot.querySelector('input[name="altcha"]');
+                    if (sinp && sinp.value) return sinp.value;
+                }
+                return '';
             """)
-            if result == 'done':
-                log("✅ [Altcha] 验证完成！")
+            if val:
+                log(f"✅ [Altcha] PoW 验证完成！(等待了 {i}s)")
                 return True
-            if result == 'no_widget':
-                log("⚠️ [Altcha] 未找到控件")
-                return False
         except Exception:
             pass
         time.sleep(1)
-    log("⚠️ [Altcha] 超时未完成，尝试继续提交...")
+
+    log("⚠️ [Altcha] 超时，尝试直接提交...")
     return False
 
-def page_run_js(element, script):
-    """在页面上下文中运行 JS"""
-    try:
-        return element.run_js(script)
-    except Exception:
-        try:
-            return element.page.run_js(script)
-        except Exception:
-            return None
-
 def analyze_page_alert(page):
-    """解析结果"""
+    """解析续期结果"""
     log(">>> [系统] 检查结果...")
     danger = page.ele('css:.alert.alert-danger')
     if danger and danger.states.is_displayed:
@@ -136,7 +173,7 @@ def analyze_page_alert(page):
 
     return "UNKNOWN"
 
-# ==================== 主程序 ====================
+# ==================== 账号与通知 ====================
 
 def load_accounts():
     accounts_json = os.environ.get("KB_ACCOUNTS_JSON", "").strip()
@@ -167,9 +204,7 @@ def load_accounts():
     password = os.environ.get("KB_PASSWORD")
     target_url = os.environ.get("KB_RENEW_URL")
     missing_env = [name for name, value in {
-        "KB_EMAIL": email,
-        "KB_PASSWORD": password,
-        "KB_RENEW_URL": target_url
+        "KB_EMAIL": email, "KB_PASSWORD": password, "KB_RENEW_URL": target_url
     }.items() if not value]
     if missing_env:
         log(f"❌ 配置缺失: {', '.join(missing_env)}")
@@ -196,12 +231,15 @@ def send_telegram_message(text):
         log(f"⚠️ TG 网络异常: {e}")
         return False
 
+# ==================== 主续期逻辑 ====================
+
 def renew_single_account(email, password, target_url, path_silk, path_cf, account_index, total_accounts):
     page = None
-    try:
-        log(f"================ 账号 {account_index}/{total_accounts} 开始 =================")
+    last_error = None
 
-        # 配置浏览器
+    try:
+        log(f"================ 账号 {account_index}/{total_accounts} 开始 ================")
+
         co = ChromiumOptions()
         co.set_argument('--headless=new')
         co.set_argument('--no-sandbox')
@@ -229,58 +267,65 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
         pass_full_page_shield(page)
 
         email_input = page.ele('css:input[name="email"]')
-        if email_input:
-            email_input.input(email)
-            page.ele('css:input[name="password"]').input(password)
-            page.ele('css:button#submit').click()
-            try:
-                page.wait.url_change('login', exclude=True, timeout=20)
-                log("✅ 登录跳转成功")
-            except Exception:
-                log("⚠️ 登录跳转超时，继续...")
-        else:
+        if not email_input:
             log("❌ 未找到登录表单")
-            return "FAIL_OTHER"
+            return "FAIL_LOGIN_NO_FORM"
+
+        email_input.input(email)
+        page.ele('css:input[name="password"]').input(password)
+        page.ele('css:button#submit').click()
+
+        try:
+            page.wait.url_change('login', exclude=True, timeout=20)
+            log("✅ 登录跳转成功")
+        except Exception:
+            if 'login' in page.url.lower():
+                log("❌ 登录失败，仍在登录页")
+                return "FAIL_LOGIN_STILL_ON_PAGE"
+            log("⚠️ 登录跳转超时但可能已登录，继续...")
 
         # ── Step 2: 续期重试循环 ──────────────────────────────
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             log(f"\n🚀 [Step 2] 尝试续期 (第 {attempt}/{max_retries} 次)...")
             page.get(target_url)
+            time.sleep(3)
+            log(f"  页面标题: {page.title} | URL: {page.url}")
             pass_full_page_shield(page)
 
-            # 等待续期按钮出现
-            renew_btn = None
-            for poll in range(8):
-                renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]')
-                if renew_btn and renew_btn.states.is_displayed:
-                    log(f"✅ 找到续期按钮 (poll={poll})")
-                    break
-                time.sleep(1)
-
-            if not renew_btn:
-                log("⚠️ 未找到续期按钮，检查页面状态...")
+            # 等待续期按钮出现（最多 120 秒）
+            log(">>> 等待续期按钮出现...")
+            try:
+                page.wait.ele_displayed('css:button[data-bs-target="#renew-modal"]', timeout=120)
+                log("✅ 续期按钮已出现")
+            except Exception:
+                log("⚠️ 等待按钮超时，检查页面状态...")
                 result = analyze_page_alert(page)
                 if result == "SUCCESS_TOO_EARLY":
                     return result
+                last_error = "FAIL_NO_RENEW_BUTTON"
+                continue
+
+            renew_btn = page.ele('css:button[data-bs-target="#renew-modal"]')
+            if not renew_btn:
+                log("❌ 未找到续期按钮")
+                last_error = "FAIL_NO_RENEW_BUTTON"
                 continue
 
             # 点击按钮，打开弹窗
             log(">>> 点击 Renew 按钮（打开弹窗）...")
             renew_btn.click(by_js=True)
+            time.sleep(2)
 
             # 等待弹窗显示
             modal = None
             for _ in range(10):
-                modal = page.ele('css:#renew-modal.show', timeout=1)
-                if modal:
-                    break
-                # Bootstrap modal 可能用 display:block 而非 .show class
-                modal = page.ele('css:#renew-modal', timeout=1)
-                if modal:
+                candidate = page.ele('css:#renew-modal', timeout=1)
+                if candidate:
                     try:
-                        display = modal.style('display')
+                        display = candidate.style('display')
                         if display and display != 'none':
+                            modal = candidate
                             break
                     except Exception:
                         pass
@@ -288,85 +333,53 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
 
             if not modal:
                 log("❌ 弹窗未出现")
+                last_error = "FAIL_MODAL_NOT_OPEN"
                 continue
 
             log("✅ 弹窗已打开")
 
-            # 等待 Altcha 验证码控件加载并自动完成
-            log(">>> 等待 Altcha 控件加载...")
-            altcha_widget = None
-            for _ in range(10):
-                altcha_widget = modal.ele('tag:altcha-widget', timeout=1)
-                if altcha_widget:
-                    break
-                time.sleep(0.5)
+            # 等待 Altcha 控件加载，然后点击
+            time.sleep(1)
+            altcha_ok = click_and_wait_altcha(page, timeout=30)
+            if not altcha_ok:
+                log("⚠️ Altcha 验证未确认完成，仍尝试提交...")
+                last_error = "FAIL_ALTCHA_TIMEOUT"
 
-            if altcha_widget:
-                log("✅ Altcha 控件已找到，等待自动验证...")
-                # Altcha 是 PoW，通常 3-10 秒内自动完成
-                altcha_done = False
-                for waited in range(20):
-                    try:
-                        # 检查 altcha input 是否有值（验证完成标志）
-                        val = page.run_js("""
-                            const w = document.querySelector('altcha-widget');
-                            if (!w) return '';
-                            // 尝试普通 DOM
-                            const inp = w.querySelector('input[name="altcha"]');
-                            if (inp) return inp.value || '';
-                            // 尝试 shadow DOM
-                            if (w.shadowRoot) {
-                                const sinp = w.shadowRoot.querySelector('input[name="altcha"]');
-                                if (sinp) return sinp.value || '';
-                            }
-                            return '';
-                        """)
-                        if val:
-                            log(f"✅ [Altcha] 验证完成 (等待了 {waited}s)")
-                            altcha_done = True
-                            break
-                    except Exception:
-                        pass
-                    time.sleep(1)
-
-                if not altcha_done:
-                    log("⚠️ [Altcha] 等待超时，尝试直接提交...")
-            else:
-                log("⚠️ 未找到 Altcha 控件，尝试继续...")
-                time.sleep(3)
-
-            # 找弹窗内的提交按钮并点击
+            # 找弹窗内的提交按钮
             confirm_btn = modal.ele('css:button[type="submit"].btn-primary', timeout=5)
             if not confirm_btn:
-                # 备用 selector
                 confirm_btn = modal.ele('css:form button[type="submit"]', timeout=3)
 
-            if confirm_btn:
-                log(">>> 点击弹窗内 Renew 提交按钮...")
-                confirm_btn.click(by_js=True)
-                log(">>> 等待响应 (5s)...")
-                time.sleep(5)
-
-                result = analyze_page_alert(page)
-                log(f">>> 结果: {result}")
-
-                if result in ("SUCCESS", "SUCCESS_TOO_EARLY"):
-                    return result
-                if result == "FAIL_CAPTCHA":
-                    log("⚠️ 验证码未通过，重试...")
-                    time.sleep(2)
-                    continue
-                if result == "FAIL_OTHER":
-                    log("❌ 其他错误")
-                    return result
-            else:
+            if not confirm_btn:
                 log("❌ 弹窗内未找到提交按钮")
+                last_error = "FAIL_NO_SUBMIT_BUTTON"
+                continue
 
-            if attempt == max_retries:
-                log("❌ 最大重试次数已达")
-                return "FAIL_MAX_RETRY"
+            log(">>> 点击弹窗内 Renew 提交按钮...")
+            confirm_btn.click(by_js=True)
+            log(">>> 等待响应 (8s)...")
+            time.sleep(8)
 
-        return "UNKNOWN"
+            result = analyze_page_alert(page)
+            log(f">>> 本次结果: {result} ({RESULT_CODES.get(result, result)})")
+
+            if result in ("SUCCESS", "SUCCESS_TOO_EARLY"):
+                return result
+
+            if result == "FAIL_CAPTCHA":
+                log("⚠️ 验证码未通过，重试...")
+                last_error = result
+                time.sleep(2)
+                continue
+
+            if result == "FAIL_OTHER":
+                last_error = result
+                continue
+
+            last_error = result if result else "FAIL_OTHER"
+
+        log("❌ 最大重试次数已达")
+        return last_error or "FAIL_MAX_RETRY"
 
     except Exception as e:
         log(f"❌ 异常: {type(e).__name__}: {e}")
@@ -379,6 +392,8 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
                 page.quit()
             except Exception:
                 pass
+
+# ==================== 主入口 ====================
 
 def job():
     accounts = load_accounts()
@@ -404,10 +419,12 @@ def job():
             index,
             len(accounts)
         )
+
+        readable = RESULT_CODES.get(status, status)
         if status in ("SUCCESS", "SUCCESS_TOO_EARLY"):
-            status_text = "✅ 成功" if status == "SUCCESS" else "✅ 未到续期时间"
+            status_text = f"✅ {readable}"
         else:
-            status_text = f"❌ 失败({status})"
+            status_text = f"❌ {readable}"
             has_failure = True
 
         email_hint = account["email"][:3] + "***" if account["email"] else "unknown"
