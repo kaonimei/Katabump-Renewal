@@ -22,24 +22,18 @@ jobs:
         with:
           python-version: '3.10'
 
-      # 👇👇👇 这一步绝对不能少！没有它 DrissionPage 启动不了 👇👇👇
-      - name: Install Chrome
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          sudo apt-get install -y google-chrome-stable xvfb
 
-      - name: Install Dependencies
-        run: pip install DrissionPage requests
+      - name: Install Python Dependencies
+        run: pip install requests undetected-chromedriver selenium
 
       - name: Run Renew Script
         env:
           KB_ACCOUNTS_JSON: ${{ secrets.KB_ACCOUNTS_JSON }}
-          KB_EMAIL: ${{ secrets.KB_EMAIL }}
-          KB_PASSWORD: ${{ secrets.KB_PASSWORD }}
-          KB_RENEW_URL: ${{ secrets.KB_RENEW_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           RUN_TRIGGER_SOURCE: ${{ github.event_name }}
-        run: |
-          # 启动 Python (带 -u 参数实时输出)
-          python -u main.py
+        run: xvfb-run -a python -u main.py
