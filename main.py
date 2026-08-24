@@ -14,7 +14,7 @@ RESULT_CODES = {
     "SUCCESS": "续期成功",
     "SUCCESS_TOO_EARLY": "未到续期时间",
     "FAIL_LOGIN_NO_FORM": "登录页无表单",
-    "FAIL_LOGIN_STILL_ON_PAGE": "登录失败仍在登录页",
+    "FAIL_LOGIN_FAILED": "登录失败",
     "FAIL_NO_RENEW_BUTTON": "找不到续期按钮",
     "FAIL_MODAL_NOT_OPEN": "弹窗未打开",
     "FAIL_ALTCHA_TIMEOUT": "Altcha验证超时",
@@ -88,6 +88,46 @@ def pass_full_page_shield(page):
             return True
     log("--- [门神] 全屏盾可能未通过，继续执行...")
     return False
+
+def do_login(page, email, password):
+    """执行登录并验证是否成功，返回 True/False"""
+    log(">>> 打开登录页...")
+    page.get('https://dashboard.katabump.com/auth/login')
+    pass_full_page_shield(page)
+
+    email_input = page.ele('css:input[name="email"]')
+    if not email_input:
+        log("❌ 未找到登录表单")
+        return False
+
+    email_input.input(email)
+    page.ele('css:input[name="password"]').input(password)
+    page.ele('css:button#submit').click()
+    log(">>> 等待登录后跳转...")
+
+    # 等待页面跳转离开登录页（最多 30 秒）
+    try:
+        page.wait.url_change('login', exclude=True, timeout=30)
+    except Exception:
+        pass
+
+    # 多等几秒让 session 写入完成
+    time.sleep(5)
+    log(f"  提交后 URL: {page.url}")
+
+    # 主动访问 dashboard 验证 session
+    log(">>> 访问 dashboard 验证 session...")
+    page.get('https://dashboard.katabump.com/dashboard')
+    time.sleep(3)
+    pass_full_page_shield(page)
+    log(f"  Dashboard URL: {page.url}")
+
+    if 'dashboard' in page.url.lower() and 'login' not in page.url.lower():
+        log("✅ 登录成功，Session 有效")
+        return True
+    else:
+        log("❌ 登录失败，仍被重定向到登录页")
+        return False
 
 def click_and_wait_altcha(page, timeout=30):
     """点击 Altcha 复选框，然后等待 PoW 自动完成"""
@@ -261,36 +301,36 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
         page = ChromiumPage(co)
         page.set.timeouts(15)
 
-        # ── Step 1: 登录 ──────────────────────────────────────
+        # ── Step 1: 登录并验证 ──────────────────────────────────────
         log(">>> [Step 1] 登录...")
-        page.get('https://dashboard.katabump.com/auth/login')
-        pass_full_page_shield(page)
-
-        email_input = page.ele('css:input[name="email"]')
-        if not email_input:
-            log("❌ 未找到登录表单")
-            return "FAIL_LOGIN_NO_FORM"
-
-        email_input.input(email)
-        page.ele('css:input[name="password"]').input(password)
-        page.ele('css:button#submit').click()
-
-        try:
-            page.wait.url_change('login', exclude=True, timeout=20)
-            log("✅ 登录跳转成功")
-        except Exception:
-            if 'login' in page.url.lower():
-                log("❌ 登录失败，仍在登录页")
-                return "FAIL_LOGIN_STILL_ON_PAGE"
-            log("⚠️ 登录跳转超时但可能已登录，继续...")
+        login_ok = do_login(page, email, password)
+        if not login_ok:
+            return "FAIL_LOGIN_FAILED"
 
         # ── Step 2: 续期重试循环 ──────────────────────────────
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             log(f"\n🚀 [Step 2] 尝试续期 (第 {attempt}/{max_retries} 次)...")
+            log(f">>> 目标 URL: {target_url}")
             page.get(target_url)
             time.sleep(3)
             log(f"  页面标题: {page.title} | URL: {page.url}")
+
+            # 检查是否被踢回登录页
+            if 'login' in page.url.lower():
+                log("⚠️ 被重定向到登录页，重新登录...")
+                login_ok = do_login(page, email, password)
+                if not login_ok:
+                    last_error = "FAIL_LOGIN_FAILED"
+                    continue
+                page.get(target_url)
+                time.sleep(3)
+                log(f"  重新登录后 URL: {page.url}")
+                if 'login' in page.url.lower():
+                    log("❌ 重新登录后仍被踢回")
+                    last_error = "FAIL_LOGIN_FAILED"
+                    continue
+
             pass_full_page_shield(page)
 
             # 等待续期按钮出现（最多 120 秒）
@@ -338,7 +378,7 @@ def renew_single_account(email, password, target_url, path_silk, path_cf, accoun
 
             log("✅ 弹窗已打开")
 
-            # 等待 Altcha 控件加载，然后点击
+            # 点击并等待 Altcha 验证
             time.sleep(1)
             altcha_ok = click_and_wait_altcha(page, timeout=30)
             if not altcha_ok:
