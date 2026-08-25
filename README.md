@@ -40,6 +40,12 @@
 ### 2.2 可选变量
 
 - `PROXY_URL`：代理节点分享链接；配置后工作流会启动 sing-box，并通过 `http://127.0.0.1:8080` 出站
+- `格式示例:
+- `vmess：vmess://base64EncodedJSON
+- `vless：vless://uuid@host:port?security=tls&type=ws&...#name
+- `hy2：hy2://password@host:port?sni=xxx
+- `sock5：socks5://user:pass@host:port
+- 
 - `TG_BOT_TOKEN`：Telegram Bot Token（通知可选）
 - `TG_CHAT_ID`：Telegram Chat ID（通知可选）
 - `NODE_ATTEMPTS`：每个账号的最大节点重试次数，默认 `3`
