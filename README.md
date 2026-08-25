@@ -24,10 +24,7 @@
 示例：
 
 ```json
-[
-  {"username":"user1@example.com","password":"pass1"},
-  {"email":"user2@example.com","password":"pass2"}
-]
+[{"username": "your_email@example.com", "password": "your_password"}, {"username": "another@example.com", "password": "pwd"}]
 ```
 
 #### 方式 B：单账号
