@@ -1,66 +1,41 @@
 # Katabump-Renewal
 
-基于 GitHub Actions + SeleniumBase 的 Katabump 自动化续期脚本。
+基于 GitHub Actions + SeleniumBase 的 Katabump 自动续期脚本。
 
-## 项目说明
+## 项目结构
 
-当前仓库核心文件：
-
-- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/main.py`：自动化脚本（登录、验证码处理、退出、Telegram 通知等逻辑）
-- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew_v2.yml`：GitHub Actions 定时任务
-
-## 功能特性
-
-- 支持多账号（通过一个环境变量传入多个 `email:password`）
-- 自动处理 Cloudflare Turnstile（含重试）
-- 支持 Telegram 执行结果通知
-- 支持 GitHub Actions 定时执行和手动触发
+- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/main.py`：登录、验证、续期、Telegram 通知主逻辑
+- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/proxy_handler.py`：解析 `PROXY_URL` 并生成 sing-box 配置
+- `/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew.yml`：定时与手动执行工作流
 
 ## 环境变量
 
-### 必需
+### 必需（二选一）
 
-- `KATABUMP_ACCOUNTS`
+1. 多账号（推荐）
+   - `USERS_JSON`
+   - 格式：
+     ```json
+     [{"username":"user1@example.com","password":"pass1"},{"email":"user2@example.com","password":"pass2"}]
+     ```
+2. 单账号
+   - `KATABUMP_EMAIL`
+   - `KATABUMP_PASSWORD`
 
-格式为逗号分隔的账号对，每个账号为 `email:password`：
+### 可选
 
-```text
-user1@example.com:pass1,user2@example.com:pass2
-```
+- `PROXY_URL`：代理分享链接（配置后工作流自动启用本地代理 `http://127.0.0.1:8080`）
+- `TG_BOT_TOKEN`：Telegram Bot Token
+- `TG_CHAT_ID`：Telegram Chat ID
+- `NODE_ATTEMPTS`：每个账号失败后切换代理节点的最大重试次数，默认 `3`
 
-### 可选（Telegram 通知）
+## GitHub Actions 使用
 
-- `TG_BOT_TOKEN`
-- `TG_CHAT_ID`
+1. 进入仓库 `Settings -> Secrets and variables -> Actions`
+2. 配置上述 Secrets（至少配置 `USERS_JSON` 或单账号）
+3. 在 `Actions` 页面手动触发 `Katabump Auto Renew`，或等待定时任务执行
 
-如果未配置，脚本会自动跳过 Telegram 推送。
-### 可选（代理）
-- `NODE_LINK`
-代理格式（确认在v2rayN里使用正常的节点）
-NODE_LINK 支持以下任意一种代理协议的完整分享链接（不配置则直连）：
-
-VLESS：vless://uuid@server:port?security=reality&sni=...&type=ws&...
-VMess：vmess://base64encoded...
-Trojan：trojan://password@server:port?sni=...&type=ws&...
-tuic：tuic://uuid:password@server:port...
-anytls：anytls://uuid@server:port...
-hysteria2：hysteria2://base64@server:port...
-SOCKS5：socks5://user:pass@server:port 或 socks://user:pass@server:port
-注意事项
-尽量添加一个干净的节点，以免过不了cf盾
-- 工作流会自动清理 `NODE_LINK` 中的换行和首尾空白，降低 Secrets 格式问题导致的失败概率
-- 支持粘贴单个节点、多个节点混合文本，或订阅内容（Base64/明文），会自动提取第一个可用代理链接
-- 对 `vmess://` 节点会自动做 Base64 标准化，并优先使用兼容版 sing-box
-- 代理初始化会自动尝试备用脚本源，若已配置 `NODE_LINK` 且全部失败将直接终止工作流（不再降级直连）
-## GitHub Actions 配置
-
-1. 打开仓库 `Settings -> Secrets and variables -> Actions`
-2. 添加上述环境变量为 Repository Secrets
-3. 在 `Actions` 页面手动运行工作流，或等待定时触发（默认每天北京时间 08:00 执行一次）
-
-默认工作流文件：`/home/runner/work/Katabump-Renewal/Katabump-Renewal/.github/workflows/renew_v2.yml`
-
-## 本地运行（可选）
+## 本地运行
 
 ```bash
 pip install seleniumbase requests
@@ -69,6 +44,6 @@ python3 /home/runner/work/Katabump-Renewal/Katabump-Renewal/main.py
 
 ## 注意事项
 
-- 该脚本依赖浏览器自动化环境（CI 中建议使用 `xvfb-run`）
-- 账号信息请仅通过 Secrets 配置，不要写入仓库
-- 若页面结构变化，续期流程可能需要同步调整脚本
+- 未配置 `PROXY_URL` 时会直连运行；配置后会先启动并检测 sing-box 代理
+- Telegram 变量未配置时，会自动跳过通知，不影响续期流程
+- 页面结构变化或验证方式变化时，可能需要同步调整脚本
