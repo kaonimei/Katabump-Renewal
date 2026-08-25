@@ -2,203 +2,96 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-  - cron: '0 0 * * *'  # 每天执行一次（UTC 00:00 / 北京时间 08:00）
+  # 每天 UTC 0点 (北京时间 8点) 运行
+  - cron: '0 0 * * *'
   workflow_dispatch: # 允许手动触发
 
 jobs:
-  Renew-Katabump:
+  renew:
     runs-on: ubuntu-latest
-    permissions:
-      actions: write  
-      contents: read
-    
+
     steps:
-    - uses: actions/checkout@v6
-    - name: ⚙ 设置 Python
-      uses: actions/setup-python@v6
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
       with:
         python-version: '3.12'
 
-    - name: 🛠️ 安装系统依赖和python依赖
+    - name: Install System & Python Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
-        python -m pip install --upgrade pip
-        pip install --disable-pip-version-check seleniumbase requests
+        pip install seleniumbase requests
         seleniumbase install chromedriver
 
-    - name: ⚙ 设置代理 (sing-box)
+    - name: Start Proxy (sing-box)
       env:
-        NODE_LINK: ${{ secrets.NODE_LINK }}
+        PROXY_URL: ${{ secrets.PROXY_URL }}
       run: |
-        if [ -z "${NODE_LINK}" ]; then
-          echo "未配置 NODE_LINK，跳过代理设置。"
+        if [ -z "$PROXY_URL" ]; then
+          echo "PROXY_URL not set, skipping sing-box setup."
           exit 0
         fi
-        NODE_LINK="$(echo "${NODE_LINK}" | tr -d '\r' | xargs)"
-
-        extract_first_proxy() {
-          python - <<'PY'
-        import base64
-        import re
-        import sys
-        import urllib.parse
-
-        text = sys.stdin.read().strip()
-        if not text:
-            sys.exit(0)
-
-        schemes = ("vless", "vmess", "trojan", "tuic", "hysteria2", "hy2", "ss", "ssr", "socks5", "socks", "http", "https")
-        pattern = re.compile(r'(?i)\b(?:' + "|".join(schemes) + r')://[^\s,]+')
-
-        def find_proxy(value: str) -> str:
-            value = value.strip()
-            if not value:
-                return ""
-
-            match = pattern.search(value)
-            if match:
-                return match.group(0)
-
-            for token in re.split(r'[\n,\s]+', value):
-                token = urllib.parse.unquote(token.strip())
-                if pattern.match(token):
-                    return token
-            return ""
-
-        found = find_proxy(text)
-        if found:
-            print(found)
-            sys.exit(0)
-
-        compact = re.sub(r'\s+', '', text)
-        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
-            try:
-                padding = "=" * ((4 - (len(compact) % 4)) % 4)
-                decoded = decoder((compact + padding).encode("utf-8")).decode("utf-8", errors="ignore")
-            except Exception:
-                continue
-            found = find_proxy(decoded)
-            if found:
-                print(found)
-                break
-        PY
-        }
-
-        extracted_link="$(printf '%s' "${NODE_LINK}" | extract_first_proxy)"
-        if [ -n "${extracted_link}" ]; then
-          NODE_LINK="${extracted_link}"
-        fi
-
-        export NODE_LINK
-
-        protocol="${NODE_LINK%%://*}"
-        protocol="$(echo "${protocol}" | tr '[:upper:]' '[:lower:]')"
-        if [ "${protocol}" = "${NODE_LINK}" ]; then
-          protocol="unknown"
-        fi
-        echo "检测到代理协议: ${protocol}"
-
-        if [ "${protocol}" = "http" ] || [ "${protocol}" = "https" ]; then
-          sub_candidate="$(curl -fsSL --connect-timeout 15 --max-time 20 "${NODE_LINK}" 2>/dev/null | tr -d '\r' | extract_first_proxy || true)"
-          if [ -n "${sub_candidate}" ]; then
-            NODE_LINK="${sub_candidate}"
-            export NODE_LINK
-            protocol="${NODE_LINK%%://*}"
-            protocol="$(echo "${protocol}" | tr '[:upper:]' '[:lower:]')"
-            echo "检测到订阅内容，已提取首个节点协议: ${protocol}"
-          fi
-        fi
-
-        if [ "${protocol}" = "vmess" ]; then
-          vmess_payload="${NODE_LINK#vmess://}"
-          vmess_payload="$(echo "${vmess_payload}" | tr -d '\n' | tr '_-' '/+')"
-          vmess_mod=$(( ${#vmess_payload} % 4 ))
-          if [ "${vmess_mod}" -ne 0 ]; then
-            vmess_payload="${vmess_payload}$(printf '=%.0s' $(seq 1 $((4 - vmess_mod))))"
-          fi
-          if decoded_vmess="$(echo "${vmess_payload}" | base64 -d 2>/dev/null)"; then
-            export NODE_LINK="vmess://$(echo -n "${decoded_vmess}" | base64 -w 0)"
-            export SING_BOX_VERSION="1.12.0"
-            echo "已标准化 vmess 节点并启用兼容版本: ${SING_BOX_VERSION}"
-          fi
-        fi
-
-        script_urls=(
-          "https://main.ssss.nyc.mn/setup_proxy.sh"
-          "https://proxy-gh.ssss.nyc.mn/https://raw.githubusercontent.com/yujinlong/Build-OpenWrt/main/setup_proxy.sh"
-          "https://raw.githubusercontent.com/yujinlong/Build-OpenWrt/main/setup_proxy.sh"
-        )
-
-        setup_ok=0
-        for script_url in "${script_urls[@]}"; do
-          echo "尝试代理初始化脚本: ${script_url}"
-          if bash <(curl -fsSL --retry 2 --retry-delay 1 --connect-timeout 15 --max-time 40 "${script_url}"); then
-            setup_ok=1
-            break
+        SINGBOX_VER="1.13.16"
+        echo "Downloading sing-box v${SINGBOX_VER}..."
+        wget -q "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-amd64.tar.gz"
+        tar -xzf "sing-box-${SINGBOX_VER}-linux-amd64.tar.gz"
+        mv "sing-box-${SINGBOX_VER}-linux-amd64/sing-box" ./sing-box
+        chmod +x ./sing-box
+        echo "Generating sing-box config from PROXY_URL..."
+        python proxy_handler.py
+        echo "Starting sing-box..."
+        nohup ./sing-box run -c config.json > singbox.log 2>&1 &
+        # urltest group needs time to probe all pool nodes before first use
+        for i in $(seq 1 12); do
+          sleep 2
+          if [ "$i" -eq 12 ]; then
+            echo "waited 24s for urltest to settle"
           fi
         done
-
-        proxy_server=""
-        for candidate in "socks5://127.0.0.1:1080" "http://127.0.0.1:1081"; do
-          if curl -x "${candidate}" -fsS --max-time 15 https://api.ipify.org >/dev/null 2>&1; then
-            proxy_server="${candidate}"
-            break
-          fi
-        done
-
-        if [ -n "${proxy_server}" ]; then
-          echo "检测到可用代理出口: ${proxy_server}"
-          {
-            echo "PROXY_SERVER=${proxy_server}"
-            echo "ALL_PROXY=${proxy_server}"
-            echo "HTTP_PROXY=${proxy_server}"
-            echo "HTTPS_PROXY=${proxy_server}"
-            echo "all_proxy=${proxy_server}"
-            echo "http_proxy=${proxy_server}"
-            echo "https_proxy=${proxy_server}"
-          } >> "${GITHUB_ENV}"
-          setup_ok=1
+        echo "--- singbox.log ---"
+        cat singbox.log || true
+        echo "--- health check ---"
+        if ! pgrep -f "./sing-box" > /dev/null; then
+          echo "❌ sing-box process not running"
+          exit 1
         fi
-
-        if [ "${setup_ok}" -ne 1 ]; then
-          echo "代理初始化失败，已停止执行（已配置 NODE_LINK，不再降级直连）。"
+        echo "✅ sing-box process alive"
+        (command -v ss >/dev/null && ss -tlnp 2>/dev/null | grep 8080) || echo "(ss unavailable)"
+        echo "--- proxy connectivity test ---"
+        if ! curl -s -m 30 -x http://127.0.0.1:8080 https://api.ip.sb/ip; then
+          echo ""
+          echo "❌ proxy connect FAILED — no reachable anytls node in pool"
+          echo "   The sing-box process is alive but every PROXY_URL/pool node timed out."
+          echo "   Could be cap on the airline nodes, the GH runner egress block, or a bad PROXY_URL."
+          echo "   Check the run's singbox.log artifact for which node the urltest picked."
           exit 1
         else
-          echo "代理初始化完成。"
+          echo ""
+          echo "  <- proxy OK"
+          # show which node the urltest group selected (sing-box debug line)
+          grep -iE "urltest|selected|node-" singbox.log | tail -5 || true
         fi
 
-    - name: 🚀 运行续期脚本
+    - name: Run Renew Script
       env:
-        KATABUMP_ACCOUNTS: ${{ secrets.KATABUMP_ACCOUNTS }}
-        KATABUMP_EMAIL: ${{ secrets.KATABUMP_EMAIL }}
-        KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
+        USERS_JSON: ${{ secrets.USERS_JSON }}
+        PROXY_URL: ${{ secrets.PROXY_URL }}
+        PROXY_SERVER: http://127.0.0.1:8080
+        IS_PROXY: "true"
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        ALL_PROXY: ${{ env.ALL_PROXY }}
-        HTTP_PROXY: ${{ env.HTTP_PROXY }}
-        HTTPS_PROXY: ${{ env.HTTPS_PROXY }}
-      run: |
-        export all_proxy="${ALL_PROXY:-}"
-        export http_proxy="${HTTP_PROXY:-}"
-        export https_proxy="${HTTPS_PROXY:-}"
-        if [ -z "${KATABUMP_ACCOUNTS}" ] && [ -n "${KATABUMP_EMAIL}" ] && [ -n "${KATABUMP_PASSWORD}" ]; then
-          export KATABUMP_ACCOUNTS="${KATABUMP_EMAIL}:${KATABUMP_PASSWORD}"
-        fi
-        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
-          python3 main.py
-        
-    - name: 🧹 清理旧的工作流运行记录
+      run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 app.py
+
+    - name: Upload Screenshots
       if: always()
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
-        count=0
-        for run_id in $runs; do
-          count=$((count + 1))
-          if [ $count -gt 1 ]; then
-            echo "删除运行记录: $run_id"
-            gh run delete $run_id || true
-          fi
-        done
+      uses: actions/upload-artifact@v4
+      with:
+        name: screenshots
+        path: |
+          *.png
+          screenshots/
+          singbox.log
+          config.json
+        if-no-files-found: ignore
