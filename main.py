@@ -170,6 +170,56 @@ _TURNSTILE_BBOX_JS = """
 })()
 """
 
+# 在 Turnstile 尚未加载时，尝试点击“启动验证”的入口控件
+_TURNSTILE_LAUNCH_CLICK_JS = """
+(function(){
+    if (document.querySelector('input[name="cf-turnstile-response"]')) return 'turnstile-ready';
+    function isVisible(el){
+        if (!el) return false;
+        var r = el.getBoundingClientRect();
+        var s = window.getComputedStyle(el);
+        return r.width > 8 && r.height > 8 && s.display !== 'none' &&
+               s.visibility !== 'hidden' && s.opacity !== '0';
+    }
+    function fireClick(el){
+        if (!isVisible(el)) return false;
+        var r = el.getBoundingClientRect();
+        var cx = r.left + Math.min(30, Math.max(10, r.width / 2));
+        var cy = r.top + r.height / 2;
+        ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(tp){
+            el.dispatchEvent(new MouseEvent(tp, {
+                bubbles: true, cancelable: true, composed: true,
+                clientX: cx, clientY: cy, button: 0
+            }));
+        });
+        try { el.click(); } catch(e) {}
+        return true;
+    }
+
+    var f = document.querySelector(
+        'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"]'
+    );
+    if (f && fireClick(f)) return 'clicked-iframe';
+
+    var launchers = document.querySelectorAll(
+        '[class*="cf-turnstile"], [id*="turnstile"], [class*="turnstile"], ' +
+        'label[for*="turnstile"], div[role="button"], button'
+    );
+    for (var i = 0; i < launchers.length; i++){
+        var e = launchers[i];
+        if (!isVisible(e)) continue;
+        var hint = ((e.className || '') + ' ' + (e.id || '') + ' ' +
+                    (e.getAttribute('aria-label') || '') + ' ' +
+                    (e.textContent || '')).toLowerCase();
+        if (hint.indexOf('turnstile') > -1 || hint.indexOf('verify') > -1 ||
+            hint.indexOf('captcha') > -1 || hint.indexOf('robot') > -1){
+            if (fireClick(e)) return 'clicked-launcher';
+        }
+    }
+    return 'no-launcher';
+})()
+"""
+
 # 页面所有 iframe 的 src + 矩形（诊断用）
 _IFRAME_MAP_JS = """
 (function(){
@@ -337,6 +387,15 @@ def _switch_to_turnstile_frame(sb):
         return True
     except Exception:
         return False
+
+def _nudge_turnstile_launcher(sb):
+    """Turnstile 尚未出现时，尝试点击入口触发加载。"""
+    try:
+        ret = sb.execute_script(_TURNSTILE_LAUNCH_CLICK_JS)
+        if ret and ret not in ("turnstile-ready", "no-launcher"):
+            print(f"🖱️ 预触发 Turnstile: {ret}")
+    except Exception:
+        pass
 
 
 #  人机验证处理（多策略：SeleniumBase UC GUI 点击 + xdotool 物理点击 + iframe 内 JS 点击）
@@ -529,6 +588,11 @@ def login(sb, email, password) -> bool:
             ts_found = True
             print(f"✅ 检测到 Turnstile（{i+1}s）")
             break
+        _nudge_turnstile_launcher(sb)
+        try:
+            sb.execute_script(_EXPAND_JS)
+        except Exception:
+            pass
         time.sleep(1)
 
     if ts_found:
