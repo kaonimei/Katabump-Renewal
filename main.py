@@ -5,11 +5,13 @@ import os
 import json
 import time
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import requests
 from seleniumbase import SB
 
 TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""
+BARK_DEVICE_KEY = os.environ.get("BARK_DEVICE_KEY") or ""
 
 BASE_URL = "https://dashboard.katabump.com"
 
@@ -38,6 +40,15 @@ def load_accounts():
 ACCOUNTS = load_accounts()
 CURRENT_EMAIL = ""
 
+def send_message(status_icon, status_text, time_left=""):
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(send_tg_message, status_icon, status_text, time_left),
+            executor.submit(send_bark_message, status_icon, status_text, time_left),
+        ]
+        for future in futures:
+            future.result()
+
 def send_tg_message(status_icon, status_text, time_left=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("ℹ️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 推送。")
@@ -45,19 +56,11 @@ def send_tg_message(status_icon, status_text, time_left=""):
     local_time = time.gmtime(time.time() + 8 * 3600)
     current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
     email = CURRENT_EMAIL
-    if '@' in email:
-        name, domain = email.split('@', 1)
-        if len(name) > 4:
-            masked_email = f"{name[:2]}****{name[-2:]}@{domain}"
-        else:
-            masked_email = f"{name}@{domain}"
-    else:
-        masked_email = (email[:2] + '****') if email else "未知"
     detail = (time_left or "").strip()
     text = (
         f"🇫🇷 katabump 续期通知\n\n"
         f"{status_icon} {status_text}\n"
-        f"👤 续期账户: {masked_email}\n"
+        f"👤 续期账户: {email}\n"
         f"⏱️ 续期时间: {current_time_str}"
     )
     if detail:
@@ -72,6 +75,45 @@ def send_tg_message(status_icon, status_text, time_left=""):
             print(f"⚠️ Telegram 通知发送失败: {r.text}")
     except Exception as e:
         print(f"⚠️ Telegram 通知发送异常: {e}")
+
+def send_bark_message(status_icon, status_text, time_left=""):
+    if not BARK_DEVICE_KEY:
+        print("ℹ️ 未配置 BARK_DEVICE_KEY，跳过 Bark 推送。")
+        return
+    local_time = time.gmtime(time.time() + 8 * 3600)
+    current_time_str = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
+    email = CURRENT_EMAIL
+    detail = (time_left or "").strip()
+    text = (
+        f"🇫🇷 katabump 续期通知\n\n"
+        f"{status_icon} {status_text}\n"
+        f"👤 续期账户: {email}\n"
+        f"⏱️ 续期时间: {current_time_str}"
+    )
+    if detail:
+        text += f"\n📋 详情: {detail}"
+    try:
+        url = "https://api.day.app/push"
+        payload = {
+            "title": "KataBump 续期报告",
+            "body": text,
+            "group": "KataBump",
+            "icon": "https://katabump.com/assets/images/favicon.png",
+            "device_key": BARK_DEVICE_KEY
+        }
+        response = requests.post(url, json=payload,
+            headers={
+                "Content-Type": "application/json; charset=utf-8"
+            },
+            timeout=10
+        )
+        if response.status_code == 200:
+            print("📩 Bark 通知发送成功！")
+        else:
+            print(f"⚠️ Bark 通知发送失败: {response.text}")
+        print("[Bark] Message sent.")
+    except Exception as e:
+        print(f"[Bark] Failed to send message: {e}")
 
 _EXPAND_JS = """
 (function() {
@@ -459,7 +501,7 @@ def _goto_server_detail(sb) -> bool:
     alert_text = _read_alert(sb)
     if alert_text and "can't renew" in alert_text.lower():
         print(f"ℹ️  页面顶部提示: {alert_text}")
-        send_tg_message("ℹ️", "⚠️ 未到续期时间", alert_text)
+        send_message("ℹ️", "⚠️ 未到续期时间", alert_text)
         return False
     see_link = None
     try:
@@ -565,14 +607,14 @@ def _check_renew_result(sb):
         print(f"📩 页面提示: {alert_text}")
         low = alert_text.lower()
         if "can't renew" in low or "unable" in low:
-            send_tg_message("⏳", "未到续期时间", alert_text)
+            send_message("⏳", "未到续期时间", alert_text)
         elif any(kw in low for kw in ("renewed", "success", "extended")):
-            send_tg_message("✅", "续期成功", alert_text)
+            send_message("✅", "续期成功", alert_text)
         else:
-            send_tg_message("ℹ️", "续期操作已执行", alert_text)
+            send_message("ℹ️", "续期操作已执行", alert_text)
     else:
         print("ℹ️ 未检测到明确的提示框，可能续期操作未生效")
-        send_tg_message("ℹ️", "续期操作已执行", "未检测到明确提示")
+        send_message("ℹ️", "续期操作已执行", "未检测到明确提示")
 
 def renew_server(sb):
     print("\n" + "#" * 25)
@@ -602,11 +644,11 @@ def _run_account(sb_kwargs, email, pwd) -> bool:
                 return True
             else:
                 print("\n❌ 登录失败，终止该账号续期操作。")
-                send_tg_message("❌", "登录失败", "未知")
+                send_message("❌", "登录失败", "未知")
                 return False
     except Exception as e:
         print(f"\n❌ 账号 {email} 处理异常: {e}")
-        send_tg_message("❌", f"处理异常: {e}", "未知")
+        send_message("❌", f"处理异常: {e}", "未知")
         return False
 
 def main():
@@ -645,7 +687,7 @@ def main():
             ok_count += 1
         else:
             print(f"❌ 账号 {email} 所有节点尝试均失败")
-            send_tg_message("❌", "节点尝试均失败", f"{max_attempts} 次不同代理节点")
+            send_message("❌", "节点尝试均失败", f"{max_attempts} 次不同代理节点")
     print("\n" + "#" * 25)
     print(f"  全部账号处理完毕: {ok_count}/{len(ACCOUNTS)} 成功")
     print("#" * 25)
